@@ -31,6 +31,10 @@ use crate::utils;
 const COOKIE_FILE_SUFFIX: &str = "cookies.json";
 const USER_AGENT: &str = "CorpLink/201000 (GooglePixel; Android 16; en)";
 
+/// 服务端返回的会话过期错误码，与 101(登录已过期) 一样需要强制重新登录，
+/// 否则 state 一直是 Login，app 永不重新认证，陷入无限重试。
+const ERROR_SESSION_EXPIRED: i32 = 10220002;
+
 #[derive(Debug)]
 pub enum Error {
     ReqwestError(reqwest::Error),
@@ -246,7 +250,7 @@ impl Client {
     ) -> Result<Resp<T>, Error> {
         let url = self.api_url.get_api_url(&api);
 
-        let rb = match body {
+        let mut rb = match body {
             Some(body) => {
                 let body = serde_json::to_string(&body).unwrap();
                 self.c.post(url).body(body)
@@ -254,13 +258,35 @@ impl Client {
             None => self.c.get(url),
         };
 
+        // 动态同步 csrf-token：default_headers 是 Client 创建时的静态快照，而运行中
+        // set-cookie 会更新 cookie_store 里的 csrf-token。每次请求都从 cookie_store 取最新值
+        // 覆盖 default_headers，否则 header 与 cookie 不一致会被服务端判为 403。
+        let csrf_value = {
+            let store = self.cookie.lock().unwrap();
+            self.conf.server.as_ref().and_then(|server| {
+                Url::from_str(server.as_str()).ok().and_then(|u| {
+                    u.domain().and_then(|d| {
+                        store.get(d, "/", "csrf-token").map(|c| c.value().to_string())
+                    })
+                })
+            })
+        };
+        if let Some(csrf) = csrf_value {
+            rb = rb.header("csrf-token", csrf);
+        }
+
         let resp = match rb.send().await {
             Ok(r) => r,
             Err(err) => return Err(Error::ReqwestError(err)),
         };
         // TODO: handle special cases
         if !resp.status().is_success() {
-            let msg = format!("logout because of bad resp code: {}", resp.status());
+            let status = resp.status();
+            // 读取并打印响应体：服务端在 4xx 时通常会在 body 说明拒绝原因（如 token 过期、
+            // 设备不允许、csrf 失效等），这对诊断 403/401 至关重要。
+            let body = resp.text().await.unwrap_or_default();
+            log::warn!("api {:?} non-success http {}: {}", api, status, body);
+            let msg = format!("logout because of bad resp code: {} {}", status, body);
             return Err(self.handle_logout_err(msg).await);
         }
 
@@ -394,7 +420,10 @@ impl Client {
             }
             _ => {
                 // TODO: add all tps login support
-                panic!("unsupported platform, please contact the developer");
+                log::warn!("unsupported tps platform, skip");
+                return Err(Error::Error(
+                    "unsupported tps platform, please contact the developer".to_string(),
+                ));
             }
         }
     }
@@ -422,7 +451,10 @@ impl Client {
                 }
             }
         }
-        panic!("failed to login with corplink");
+        log::warn!("failed to login with corplink: no available auth method");
+        Err(Error::Error(
+            "failed to login with corplink: no available auth method".to_string(),
+        ))
     }
 
     async fn ldap_login(&mut self) -> Result<String, Error> {
@@ -440,7 +472,10 @@ impl Client {
                 };
             }
         }
-        panic!("failed to login with ldap");
+        log::warn!("failed to login with ldap: no password or available method");
+        Err(Error::Error(
+            "failed to login with ldap: no password or available method".to_string(),
+        ))
     }
 
     fn is_platform_or_default(&self, platform: &str) -> bool {
@@ -547,7 +582,10 @@ impl Client {
             log::warn!("failed to get otp code");
             return Ok(());
         }
-        panic!("no available login method, please provide a valid platform")
+        log::warn!("no available login method succeeded, please provide a valid platform");
+        return Err(Error::Error(
+            "no available login method succeeded".to_string(),
+        ));
     }
 
     async fn get_login_method(&mut self) -> Result<RespLoginMethod, Error> {
@@ -592,7 +630,7 @@ impl Client {
                 } // else: password already convert to sha256sum
             }
             _ => {
-                panic!("invalid platform {platform}")
+                return Err(Error::Error(format!("invalid platform {platform}")));
             }
         }
         m.insert("password".to_string(), json!(password));
@@ -658,7 +696,7 @@ impl Client {
             .await?;
         match resp.code {
             0 => Ok(resp.data.unwrap()),
-            101 => Err(self.handle_logout_err(resp.message.unwrap()).await),
+            101 | ERROR_SESSION_EXPIRED => Err(self.handle_logout_err(resp.message.unwrap()).await),
             _ => Err(Error::Error(format!(
                 "failed to list vpn with error {}: {}",
                 resp.code,
@@ -849,7 +887,7 @@ impl Client {
             .await?;
         match resp.code {
             0 => Ok(resp.data.unwrap()),
-            101 => Err(self.handle_logout_err(resp.message.unwrap()).await),
+            101 | ERROR_SESSION_EXPIRED => Err(self.handle_logout_err(resp.message.unwrap()).await),
             _ => Err(Error::Error(format!(
                 "failed to fetch peer info with error {}: {}",
                 resp.code,
@@ -860,8 +898,9 @@ impl Client {
 
     pub async fn connect_vpn(&mut self) -> Result<WgConf, Error> {
         // 首先检测是否在内网环境
-        if let Some(_intranet_domain) = &self.conf.intranet_domain {
-            if utils::is_in_intranet(&self.conf.intranet_domain) {
+        if let Some(intranet_domain) = &self.conf.intranet_domain {
+            // 空字符串视为未配置内网域名，跳过内网检测
+            if !intranet_domain.is_empty() && utils::is_in_intranet(&self.conf.intranet_domain) {
                 log::info!("检测到内网环境，不需要建立VPN连接");
                 
                 // 获取默认路由IP
@@ -920,7 +959,8 @@ impl Client {
             .into_iter()
             .filter(|vpn| {
                 if let Some(server_name) = self.conf.vpn_server_name.clone() {
-                    if vpn.name != server_name {
+                    // 空字符串视为未指定，不参与过滤
+                    if !server_name.is_empty() && vpn.name != server_name {
                         log::info!("skip {}, expect {}", vpn.name, server_name);
                         return false;
                     }

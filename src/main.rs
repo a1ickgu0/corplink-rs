@@ -313,12 +313,20 @@ async fn main() -> anyhow::Result<()> {
         log::error!("{}", message);
         log::error!("panic occurred at {:?}", panic_info.location());
         
-        // 同步方式发送飞书通知，避免在panic时创建新的运行时
-        // 注意：这里使用block_on可能会在某些环境下失败，但在大多数情况下应该可以工作
-        // 如果失败，我们也不需要处理，因为程序已经在panic中
-        if let Ok(rt) = tokio::runtime::Builder::new_current_thread().build() {
-            let _ = rt.block_on(utils::send_feishu_message(&feishu_webhook_url_clone_panic, &message));
-        }
+        // 在独立 OS 线程里发送飞书通知：panic 往往发生在驱动 tokio runtime 的线程上，
+        // 在该线程直接 block_on 会触发 "Cannot start a runtime from within a runtime" 二次 panic
+        // 进而导致 abort。新线程不属于任何 runtime，可以安全创建并 block_on。
+        let url = feishu_webhook_url_clone_panic.clone();
+        let msg = message.clone();
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("build feishu notify runtime");
+            let _ = rt.block_on(utils::send_feishu_message(&url, &msg));
+        })
+        .join()
+        .ok();
     }));
 
     print_version();

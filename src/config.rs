@@ -97,31 +97,36 @@ impl Config {
             conf.device_name = Some(DEFAULT_DEVICE_NAME.to_string());
             update_conf = true;
         }
-        if conf.device_id.is_none() {
+        // 空字符串与 None 一样视为未配置，否则配置文件里残留的 "" 会导致
+        // device_id / 密钥对一直为空，后续 fetch_peer_info 发送空的 public_key
+        if conf.device_id.as_deref().map(str::is_empty).unwrap_or(true) {
             conf.device_id = Some(format!(
                 "{:x}",
                 md5::compute(conf.device_name.clone().unwrap())
             ));
             update_conf = true;
         }
-        match &conf.private_key {
-            Some(private_key) => match conf.public_key {
-                Some(_) => {
-                    // both keys exist, do nothing
-                }
-                None => {
-                    // only private key exists, generate public from private
-                    let public_key = utils::gen_public_key_from_private(private_key)?;
-                    conf.public_key = Some(public_key);
-                    update_conf = true;
-                }
-            },
-            None => {
-                // no key exists, generate new
+        let private_key_empty = conf.private_key.as_deref().map(str::is_empty).unwrap_or(true);
+        let public_key_empty = conf.public_key.as_deref().map(str::is_empty).unwrap_or(true);
+        match private_key_empty {
+            true => {
+                // 无有效私钥，生成新的密钥对
                 let (public_key, private_key) = utils::gen_wg_keypair();
                 (conf.public_key, conf.private_key) = (Some(public_key), Some(private_key));
                 update_conf = true;
             }
+            false => match public_key_empty {
+                true => {
+                    // 只有私钥存在，从私钥推导公钥
+                    let public_key =
+                        utils::gen_public_key_from_private(conf.private_key.as_ref().unwrap())?;
+                    conf.public_key = Some(public_key);
+                    update_conf = true;
+                }
+                false => {
+                    // 公私钥都存在，无需处理
+                }
+            },
         }
         if update_conf {
             conf.save().await?;

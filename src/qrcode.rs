@@ -21,47 +21,40 @@ impl TerminalQrCode {
     pub fn print(&self) {
         let code = self.code.clone();
         let width = code.width();
-        let height = (width as f32 / 2 as f32).ceil() as usize;
+        // half-block 渲染：横向 1 个二维码模块 = 1 个字符，纵向 2 个模块 = 1 行（用 ▀ 上下半块）。
+        // 终端字符单元高宽比约 2:1，这样每个模块视觉上恰好是正方形 —— 这是终端二维码能被
+        // 手机摄像头可靠扫描的唯一方案。braille(2×4)/quarter-block(2×2) 虽然更小，但前者点阵稀疏、
+        // 后者模块变形，都无法识别。宽度等于模块数（此处 113）是 860 字节 URL 的固有下限。
+        let new_height = (width + 1) / 2;
         let pixels = code.to_colors();
-        let mut display = Display::new((width + 2) as u32, (height + 1) as u32);
+        let mut display = Display::new((width + 2) as u32, (new_height + 1) as u32);
 
-        for (i, pixel) in pixels.iter().enumerate() {
-            let x = i % width;
-            let y = (i as f32 / width as f32).floor() as isize;
+        let colour_of = |p: &qrcode::types::Color| match p {
+            qrcode::types::Color::Light => Colour::White,
+            qrcode::types::Color::Dark => Colour::Black,
+        };
 
-            let colour = match pixel {
-                qrcode::types::Color::Light => Colour::White,
-                qrcode::types::Color::Dark => Colour::Black,
-            };
-
-            let char_colour = match width % 2 {
-                0 => colour,
-                1 => Colour::White,
-                _ => Colour::White,
-            };
-
-            match y % 2 {
-                0 => display.set_pixel(
-                    x as isize + 1,
-                    (y / 2) as isize + 1,
-                    '▄',
-                    char_colour,
-                    colour,
-                ),
-                1 => display
-                    .get_mut_pixel(x as isize + 1, ((y - 1) / 2) as isize + 1)
-                    .set_colour(colour),
-                _ => println!("That shouldn't happen"),
+        for gy in 0..new_height {
+            for gx in 0..width {
+                let top = colour_of(&pixels[gy * 2 * width + gx]);
+                // 奇数宽度导致下半模块越界时按浅色处理
+                let bottom = if gy * 2 + 1 < width {
+                    colour_of(&pixels[(gy * 2 + 1) * width + gx])
+                } else {
+                    Colour::White
+                };
+                // ▀（上半块）：上半部分取前景色（上模块），下半部分取背景色（下模块）
+                display.set_pixel(gx as isize + 1, gy as isize + 1, '▀', top, bottom);
             }
         }
-        for _i in 0..((height + 2) as u32) {
+        for _i in 0..((new_height + 2) as u32) {
             println!();
         }
         display.print();
-        
+
         // 强制刷新输出缓冲区，确保二维码完全打印
         std::io::stdout().flush().unwrap();
-        
+
         // 添加一个小延迟，确保二维码完全显示
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
