@@ -57,6 +57,8 @@ pub struct Config {
     pub origin_dns: Option<Vec<String>>,
     pub protocol_mode: Option<i32>,
     pub performance: Option<PerformanceConfig>,
+    /// 二维码以 SVG 图片弹窗显示时的目标边长（像素）；缺省走终端半块渲染或默认尺寸。
+    pub qr_image_size: Option<u32>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

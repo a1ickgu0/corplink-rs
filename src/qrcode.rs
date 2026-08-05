@@ -58,4 +58,31 @@ impl TerminalQrCode {
         // 添加一个小延迟，确保二维码完全显示
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
+
+    /// 将二维码渲染为 PNG 写入临时文件，并用系统图片查看器弹出。
+    /// 与终端半块渲染相比：模块是真正的实心正方形、尺寸可控、高对比度，手机更易扫；
+    /// PNG 用系统默认图片查看器（macOS Preview / Linux 图片浏览器 / Windows 照片）通用打开。
+    /// `target_size` 为目标边长像素。返回打开结果，失败时调用方可回退到 `print()`。
+    pub fn open_as_png(&self, target_size: u32) -> std::io::Result<()> {
+        let image = self
+            .code
+            .render::<image::Rgb<u8>>()
+            .min_dimensions(target_size, target_size)
+            .build();
+        // 输出路径可被环境变量覆盖（GUI 模式下指向固定路径 /tmp/corplink_qr.png）
+        let path = match std::env::var("CORPLINK_QR_PATH") {
+            Ok(p) if !p.is_empty() => std::path::PathBuf::from(p),
+            _ => std::env::temp_dir().join("corplink_qr.png"),
+        };
+        // image::ImageBuffer::save 依赖 image crate 的 png 编码器（见 Cargo.toml features）
+        image
+            .save(&path)
+            .map_err(std::io::Error::other)?;
+        // GUI 模式下由窗口内显示，不弹外部查看器
+        let suppress_viewer = matches!(std::env::var("CORPLINK_NO_QR_VIEWER"), Ok(v) if v == "1");
+        if !suppress_viewer {
+            crate::utils::open_file(&path.to_string_lossy())?;
+        }
+        Ok(())
+    }
 }

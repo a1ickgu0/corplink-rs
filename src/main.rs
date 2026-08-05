@@ -269,6 +269,7 @@ async fn main() -> anyhow::Result<()> {
                     origin_dns: None,
                     protocol_mode: None,
                     performance: None,
+                    qr_image_size: None,
                 })
             }
     }?;

@@ -376,7 +376,18 @@ impl Client {
         log::info!("old token is: {token}");
         log::info!("please scan the QR code or visit the following link to auth corplink:\n{url}");
         let code = TerminalQrCode::from_bytes(url.as_bytes());
-        code.print();
+        // 优先以 PNG 图片弹窗显示（实心正方形模块、尺寸可控、手机易扫）；
+        // 无图形环境/无查看器（如 SSH 服务器）时回退到终端半块渲染。
+        let qr_target_size = self.conf.qr_image_size.unwrap_or(640);
+        if let Err(e) = code.open_as_png(qr_target_size) {
+            log::warn!("二维码图片弹窗失败({e})，回退到终端渲染");
+            code.print();
+        } else {
+            log::info!(
+                "二维码已用系统图片查看器弹出（临时 PNG，约 {0}×{0} 像素）",
+                qr_target_size
+            );
+        }
         match method {
             PLATFORM_LARK | PLATFORM_OIDC => {
                 log::info!("请在完成扫码验证后输入 'y' 继续");

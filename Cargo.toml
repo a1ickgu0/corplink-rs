@@ -49,6 +49,8 @@ flexi_logger = { version = "0.28", features = ["specfile", "colors"] }
 libc = "0.2"
 terminal_graphics = "0.1.5"
 qrcode = "0.14.1"
+# 用于把二维码渲染成 PNG 落盘再弹出（PNG 编码器；qrcode 0.14 用 image 0.25，版本需对齐）
+image = { version = "0.25", default-features = false, features = ["png"] }
 anyhow = "1.0"
 
 

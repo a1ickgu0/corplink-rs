@@ -83,6 +83,34 @@ pub async fn send_feishu_message(robot_url: &str, message: &str) -> Result<()> {
     Ok(())
 }
 
+/// 用系统默认程序打开文件（弹出二维码图片等）：macOS=`open`、Linux=`xdg-open`、Windows=`cmd /C start`。
+/// 以 spawn 方式启动、不阻塞调用方。Linux 无图形会话（SSH/服务器，常见于本程序运行环境）时
+/// 直接返回 Err，以便调用方回退到终端渲染。
+pub fn open_file(path: &str) -> std::io::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open").arg(path).spawn().map(|_| ())
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        if std::env::var("DISPLAY").is_err() && std::env::var("WAYLAND_DISPLAY").is_err() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "no graphical session (DISPLAY/WAYLAND_DISPLAY unset)",
+            ));
+        }
+        Command::new("xdg-open").arg(path).spawn().map(|_| ())
+    }
+    #[cfg(target_os = "windows")]
+    {
+        Command::new("cmd")
+            .arg("/C")
+            .arg(format!("start \"\" \"{}\"", path))
+            .spawn()
+            .map(|_| ())
+    }
+}
+
 /// 获取指定网络接口的IP地址
 pub fn get_interface_address(interface_name: &str) -> Result<String, String> {
     // 执行ifconfig命令获取接口信息
@@ -179,11 +207,25 @@ pub fn is_in_intranet(intranet_domain: &Option<String>) -> bool {
 /// 检查用户权限
 pub fn check_privilege() -> Result<(), ()> {
     #[cfg(unix)]
-    match sudo::escalate_if_needed() {
-        Ok(_) => Ok(()),
-        Err(_) => {
-            log::error!("please run as root");
-            Err(())
+    {
+        // 由 GUI/控制器经 osascript 以 root 启动本进程时，跳过 escalate_if_needed。
+        // 否则 escalate 会用 sudo 重新 exec 自身，导致控制器持有的是【已退出的旧 PID】，
+        // 无法 kill 真实 VPN 进程（GUI 点"退出"无效、进程变孤儿无限重试）。
+        if std::env::var("CORPLINK_NO_ESCALATE").as_deref() == Ok("1") {
+            if sudo::check() == sudo::RunningAs::Root {
+                return Ok(());
+            }
+            log::error!(
+                "CORPLINK_NO_ESCALATE=1 但当前非 root（osascript 提权未生效？），请以管理员权限运行"
+            );
+            return Err(());
+        }
+        match sudo::escalate_if_needed() {
+            Ok(_) => Ok(()),
+            Err(_) => {
+                log::error!("please run as root");
+                Err(())
+            }
         }
     }
 
