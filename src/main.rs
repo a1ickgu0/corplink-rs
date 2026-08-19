@@ -13,6 +13,8 @@ mod wg;
 mod yaml;
 
 use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering};
+use tokio::sync::Notify;
 use log;
 use chrono::{DateTime, Local};
 use flexi_logger::{Logger, FileSpec, WriteMode, DeferredNow, Record, LoggerHandle, FlexiLoggerError};
@@ -224,6 +226,61 @@ pub const EPERM: i32 = 1;
 pub const ENOENT: i32 = 2;
 pub const ETIMEDOUT: i32 = 110;
 
+/// 全局退出标志：程序任意阶段收到退出信号后置位
+static SHUTDOWN_FLAG: AtomicBool = AtomicBool::new(false);
+/// 唤醒所有等待退出信号的 select 分支
+static SHUTDOWN_NOTIFY: Notify = Notify::const_new();
+
+fn shutdown_requested() -> bool {
+    SHUTDOWN_FLAG.load(Ordering::SeqCst)
+}
+
+/// 等待退出信号；若信号已到达则立即返回
+async fn wait_for_shutdown() {
+    if shutdown_requested() {
+        return;
+    }
+    SHUTDOWN_NOTIFY.notified().await;
+}
+
+/// 全局信号处理：程序启动后立即注册，覆盖登录/连接/运行/断开全部阶段。
+/// 首个 SIGINT/SIGTERM 触发优雅退出流程；再次收到信号则强制退出，
+/// 避免断开流程卡死时无法退出（同时防止退出中途信号被系统默认行为硬杀）。
+fn spawn_signal_handler() {
+    tokio::spawn(async move {
+        #[cfg(unix)]
+        {
+            let mut sigint = signal(SignalKind::interrupt()).unwrap();
+            let mut sigterm = signal(SignalKind::terminate()).unwrap();
+            loop {
+                tokio::select! {
+                    _ = sigint.recv() => log::info!("SIGINT received"),
+                    _ = sigterm.recv() => log::info!("SIGTERM received"),
+                }
+                if SHUTDOWN_FLAG.swap(true, Ordering::SeqCst) {
+                    log::warn!("exit signal received again, force exit");
+                    exit(1);
+                }
+                SHUTDOWN_NOTIFY.notify_one();
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            loop {
+                match tokio::signal::ctrl_c().await {
+                    Ok(_) => log::info!("ctrl+c received"),
+                    Err(e) => log::warn!("failed to receive signal: {}", e),
+                }
+                if SHUTDOWN_FLAG.swap(true, Ordering::SeqCst) {
+                    log::warn!("exit signal received again, force exit");
+                    exit(1);
+                }
+                SHUTDOWN_NOTIFY.notify_one();
+            }
+        }
+    });
+}
+
 
 
 #[tokio::main]
@@ -331,7 +388,10 @@ async fn main() -> anyhow::Result<()> {
     }));
 
     print_version();
-    
+
+    // 全局信号处理：从现在起任意阶段的 SIGINT/SIGTERM 都走优雅退出
+    spawn_signal_handler();
+
     // 检查权限
     if let Err(_) = utils::check_privilege() {
         log::error!("permission denied, try to run with sudo or as root");
@@ -405,6 +465,11 @@ const MAX_RETRY_INTERVAL_SECONDS: u64 = 10;
             //     exit(ETIMEDOUT);
             // }
             
+            if shutdown_requested() {
+                log::info!("shutdown requested before connect, reach exit");
+                exit(0);
+            }
+
             connection_attempts += 1;
             
             if c.need_login() {
@@ -422,7 +487,19 @@ const MAX_RETRY_INTERVAL_SECONDS: u64 = 10;
             }
             
             log::info!("try to connect (attempt {})", connection_attempts);
-            match c.connect_vpn().await {
+            // 连接阶段可被退出信号打断，避免强杀进程导致服务端残留会话
+            let connect_result = tokio::select! {
+                r = c.connect_vpn() => Some(r),
+                _ = wait_for_shutdown() => None,
+            };
+            let connect_result = match connect_result {
+                Some(r) => r,
+                None => {
+                    log::info!("shutdown requested during connect, reach exit");
+                    exit(0);
+                }
+            };
+            match connect_result {
                 Ok(conf) => {
                     wg_conf = Some(conf);
                     break;
@@ -514,8 +591,14 @@ const MAX_RETRY_INTERVAL_SECONDS: u64 = 10;
                             log::warn!("Failed to send feishu message: {}", msg_err);
                         }
                         
-                        // 等待重试间隔时间
-                        tokio::time::sleep(Duration::from_secs(retry_interval)).await;
+                        // 等待重试间隔时间，期间收到退出信号则直接退出
+                        tokio::select! {
+                            _ = tokio::time::sleep(Duration::from_secs(retry_interval)) => {},
+                            _ = wait_for_shutdown() => {
+                                log::info!("shutdown requested during retry wait, reach exit");
+                                exit(0);
+                            },
+                        }
                         // 指数退避重试间隔，但不超过最大间隔
                         retry_interval = std::cmp::min(retry_interval * 2, MAX_RETRY_INTERVAL_SECONDS);
                         
@@ -556,34 +639,9 @@ const MAX_RETRY_INTERVAL_SECONDS: u64 = 10;
             // 仅运行保活逻辑
             tokio::select! {
                 // handle signal
-                _ = async {
-                    // 处理SIGINT和SIGTERM信号
-                    #[cfg(unix)]
-                    {
-                        let mut sigint = signal(SignalKind::interrupt()).unwrap();
-                        let mut sigterm = signal(SignalKind::terminate()).unwrap();
-                        
-                        tokio::select! {
-                            _ = sigint.recv() => {
-                                log::info!("SIGINT received");
-                            },
-                            _ = sigterm.recv() => {
-                                log::info!("SIGTERM received");
-                            },
-                        }
-                    }
-                    #[cfg(not(unix))]
-                    {
-                        match tokio::signal::ctrl_c().await {
-                            Ok(_) => {},
-                            Err(e) => {
-                                log::warn!("failed to receive signal: {}",e);
-                            },
-                        }
-                        log::info!("ctrl+c received");
-                    }
+                _ = wait_for_shutdown() => {
                     should_exit = true;
-                } => {},
+                },
 
                 // keep alive
                 _ = c.keep_alive_vpn(&wg_conf, 10) => {
@@ -654,34 +712,9 @@ const MAX_RETRY_INTERVAL_SECONDS: u64 = 10;
 
             tokio::select! {
                 // handle signal
-                _ = async {
-                    // 处理SIGINT和SIGTERM信号
-                    #[cfg(unix)]
-                    {
-                        let mut sigint = signal(SignalKind::interrupt()).unwrap();
-                        let mut sigterm = signal(SignalKind::terminate()).unwrap();
-                        
-                        tokio::select! {
-                            _ = sigint.recv() => {
-                                log::info!("SIGINT received");
-                            },
-                            _ = sigterm.recv() => {
-                                log::info!("SIGTERM received");
-                            },
-                        }
-                    }
-                    #[cfg(not(unix))]
-                    {
-                        match tokio::signal::ctrl_c().await {
-                            Ok(_) => {},
-                            Err(e) => {
-                                log::warn!("failed to receive signal: {}",e);
-                            },
-                        }
-                        log::info!("ctrl+c received");
-                    }
+                _ = wait_for_shutdown() => {
                     should_exit = true;
-                } => {},
+                },
 
                 // keep alive
                 _ = c.keep_alive_vpn(&wg_conf, 60) => {
@@ -707,11 +740,32 @@ const MAX_RETRY_INTERVAL_SECONDS: u64 = 10;
             // 短暂延迟，确保WireGuard服务已经完全停止
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             
-            // 断开VPN连接
-            match c.disconnect_vpn(&wg_conf).await {
-                Ok(_) => {}
-                Err(e) => log::warn!("failed to disconnect vpn: {}", e),
-            };
+            // 断开VPN连接：失败时重试，并容忍服务端"会话已不存在"(10220011)。
+            // 断开不彻底会在服务端残留会话，导致下次连接在60秒内被清除
+            let mut disconnected = false;
+            for attempt in 1..=3 {
+                match c.disconnect_vpn(&wg_conf).await {
+                    Ok(_) => {
+                        disconnected = true;
+                        log::info!("vpn disconnected");
+                        break;
+                    }
+                    Err(e) => {
+                        let err_str = e.to_string();
+                        if err_str.contains("10220011") {
+                            // 服务端已无此会话，无需再删
+                            disconnected = true;
+                            log::info!("no vpn info on server (10220011), treat as disconnected");
+                            break;
+                        }
+                        log::warn!("disconnect attempt {}/3 failed: {}", attempt, err_str);
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                    }
+                }
+            }
+            if !disconnected {
+                log::warn!("disconnect failed after retries, server-side session may remain");
+            }
 
             #[cfg(target_os = "macos")]
             if use_vpn_dns {
@@ -730,8 +784,14 @@ const MAX_RETRY_INTERVAL_SECONDS: u64 = 10;
             exit(exit_code);
         }
         
-        // 短暂延迟后重新尝试连接
-        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+        // 短暂延迟后重新尝试连接，期间收到退出信号则直接退出
+        tokio::select! {
+            _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {},
+            _ = wait_for_shutdown() => {
+                log::info!("shutdown requested before reconnect, reach exit");
+                exit(0);
+            },
+        }
         log::info!("preparing to reconnect VPN...");
         
         // 发送重连通知到飞书（如果配置允许）

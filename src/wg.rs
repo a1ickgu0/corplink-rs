@@ -45,6 +45,39 @@ pub fn stop_wg_go() {
     stop_wg();
 }
 
+/// 查询并打印 wg 隧道统计（收发字节数、最近握手时间），用于诊断保活失败时隧道数据面是否存活
+pub fn log_wg_stats() {
+    let data = match uapi(b"get=1\n\n") {
+        Ok(d) => d,
+        Err(e) => {
+            log::warn!("failed to query uapi stats: {}", e);
+            return;
+        }
+    };
+    let s = String::from_utf8_lossy(&data);
+    let mut tx = None;
+    let mut rx = None;
+    let mut handshake = None;
+    for line in s.split('\n') {
+        if let Some(v) = line.strip_prefix("transfer_tx=") {
+            tx = Some(v.to_string());
+        } else if let Some(v) = line.strip_prefix("transfer_rx=") {
+            rx = Some(v.to_string());
+        } else if let Some(v) = line.strip_prefix("last_handshake_time_sec=") {
+            if let Ok(sec) = v.trim().parse::<i64>() {
+                handshake = chrono::DateTime::from_timestamp(sec, 0)
+                    .map(|t| t.with_timezone(&chrono::Local).format("%H:%M:%S").to_string());
+            }
+        }
+    }
+    log::warn!(
+        "wg tunnel stats: tx={} bytes, rx={} bytes, last_handshake={}",
+        tx.as_deref().unwrap_or("n/a"),
+        rx.as_deref().unwrap_or("n/a"),
+        handshake.as_deref().unwrap_or("none")
+    );
+}
+
 pub fn set_performance_config(
     mtu: u32,
     keepalive_interval: u32,

@@ -1107,7 +1107,16 @@ impl Client {
                 }
             } else {
                 // 在外网环境，使用原来的report_vpn_status方式
-                self.report_vpn_status(conf).await.is_ok()
+                // 失败时打印具体错误（网络错误还是服务端业务错误码），供定位保活中断原因
+                match self.report_vpn_status(conf).await {
+                    Ok(_) => true,
+                    Err(e) => {
+                        log::warn!("report_vpn_status failed: {}", e);
+                        // 打印隧道收发与握手状态，区分"隧道数据面失效"与"服务端会话被作废"
+                        crate::wg::log_wg_stats();
+                        false
+                    }
+                }
             };
             
             if keep_alive_success {
