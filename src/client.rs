@@ -38,6 +38,9 @@ const ERROR_SESSION_EXPIRED: i32 = 10220002;
 #[derive(Debug)]
 pub enum Error {
     ReqwestError(reqwest::Error),
+    /// 会话失效/请求被服务端拒绝（HTTP 层非成功或 101 过期），登录态已被重置。
+    /// 与普通 Error 的区别：调用方（如扫码轮询）应立即中止而非继续重试。
+    Logout(String),
     Error(String),
 }
 
@@ -45,6 +48,9 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Error::ReqwestError(err) => err.fmt(f),
+            Error::Logout(err) => {
+                write!(f, "{}", err)
+            }
             Error::Error(err) => {
                 write!(f, "{}", err)
             }
@@ -56,6 +62,7 @@ impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Error::ReqwestError(err) => Some(err),
+            Error::Logout(_) => None,
             Error::Error(_) => None,
         }
     }
@@ -359,11 +366,15 @@ impl Client {
             .request::<RespLogin>(ApiName::TpsTokenCheck, Some(m))
             .await?;
         match resp.code {
-            0 => Ok(resp.data.unwrap().url),
-            _ => {
-                let msg = resp.message.unwrap();
-                Err(Error::Error(msg))
-            }
+            0 => resp
+                .data
+                .map(|d| d.url)
+                .ok_or_else(|| Error::Error("tps token confirmed but no data in resp".to_string())),
+            // 扫码轮询热路径：服务端非 0 code 时 message 可能为 null，绝不 unwrap
+            _ => Err(Error::Error(
+                resp.message
+                    .unwrap_or_else(|| format!("check_tps_token failed with code {}", resp.code)),
+            )),
         }
     }
 
@@ -375,15 +386,16 @@ impl Client {
     ) -> Result<String, Error> {
         log::info!("old token is: {token}");
         log::info!("please scan the QR code or visit the following link to auth corplink:\n{url}");
-        // 清屏，让二维码从终端第一行开始显示
-        print!("\x1b[2J\x1b[H");
-        let _ = std::io::stdout().flush();
         let code = TerminalQrCode::from_bytes(url.as_bytes());
         // 优先以 PNG 图片弹窗显示（实心正方形模块、尺寸可控、手机易扫）；
         // 无图形环境/无查看器（如 SSH 服务器）时回退到终端半块渲染。
         let qr_target_size = self.conf.qr_image_size.unwrap_or(640);
         if let Err(e) = code.open_as_png(qr_target_size) {
             log::warn!("二维码图片弹窗失败({e})，回退到终端渲染");
+            // 清屏让二维码从终端第一行开始显示；PNG 弹窗成功时无需清屏，
+            // 清了只会无意义抹掉终端里已有的日志
+            print!("\x1b[2J\x1b[H");
+            let _ = std::io::stdout().flush();
             code.print();
         } else {
             log::info!(
@@ -400,7 +412,8 @@ impl Client {
 
                 let start = std::time::Instant::now();
                 let timeout = Duration::from_secs(300); // 最长等待 5 分钟
-                let mut last_err;
+                let mut polls: u32 = 0;
+                let mut logout_streak = 0;
                 loop {
                     match self.check_tps_token(token).await {
                         Ok(url) => {
@@ -408,13 +421,34 @@ impl Client {
                             return Ok(url);
                         }
                         Err(e) => {
-                            last_err = e.to_string();
-                            // 未扫码/未确认，继续轮询
+                            // 请求被服务端拒绝（HTTP 层失败/会话失效，见 Error::Logout）：
+                            // 偶发抖动继续等，连续 5 次（约 10 秒）仍被拒则立即失败，
+                            // 交由外层重登录流程接管，避免致命错误被静默轮满 5 分钟
+                            if let Error::Logout(_) = &e {
+                                logout_streak += 1;
+                                log::warn!("check_tps_token 被拒绝({}/5): {}", logout_streak, e);
+                                if logout_streak >= 5 {
+                                    return Err(e);
+                                }
+                            } else {
+                                logout_streak = 0;
+                                // 未扫码/未确认属正常等待；原因周期性提升到 info（约 30 秒一次），
+                                // 既让用户看到服务端返回，又不持续刷屏把终端二维码挤走
+                                if polls % 15 == 0 {
+                                    log::info!(
+                                        "等待扫码完成（已等待 {}s）: {}",
+                                        start.elapsed().as_secs(),
+                                        e
+                                    );
+                                } else {
+                                    log::debug!("等待扫码完成: {}", e);
+                                }
+                                polls += 1;
+                            }
                             if start.elapsed() > timeout {
                                 log::warn!("扫码登录超时（5分钟）");
-                                return Err(Error::Error(format!("扫码登录超时: {}", last_err)));
+                                return Err(Error::Error(format!("扫码登录超时: {}", e)));
                             }
-                            log::debug!("等待扫码完成: {}", last_err);
                             sleep(Duration::from_secs(2)).await;
                         }
                     }
@@ -689,7 +723,7 @@ impl Client {
 
     async fn handle_logout_err(&mut self, msg: String) -> Error {
         self.change_state(State::Init).await;
-        Error::Error(format!("operation failed because of logout: {}", msg))
+        Error::Logout(format!("operation failed because of logout: {}", msg))
     }
 
     async fn list_vpn(&mut self) -> Result<Vec<RespVpnInfo>, Error> {
@@ -905,19 +939,12 @@ impl Client {
             if !intranet_domain.is_empty() && utils::is_in_intranet(&self.conf.intranet_domain) {
                 log::info!("检测到内网环境，不需要建立VPN连接");
                 
-                // 获取默认路由IP
-                match utils::get_default_route_ip() {
-                    Ok(intranet_ip) => {
-                        log::info!("获取到默认路由IP: {}", intranet_ip);
-                        
-                        // 发送内网IP到飞书
-                        // let check_config = crate::config::read_check_config(self.conf.check_config_path.as_deref());
-                        // let feishu_message = format!("检测到内网环境，当前出口IP: {}", intranet_ip);
-                        // if let Err(e) = utils::send_feishu_message(&check_config.feishu_webhook_url, &feishu_message).await {
-                        //     log::warn!("发送飞书消息失败: {}", e);
-                        // }
-                        
-                        // 返回一个空的WgConf，仅设置内网相关字段
+                        // 获取默认路由IP
+                        match utils::get_default_route_ip() {
+                            Ok(intranet_ip) => {
+                                log::info!("获取到默认路由IP: {}", intranet_ip);
+
+                                // 返回一个空的WgConf，仅设置内网相关字段
                         // 因为在内网环境下不需要实际的VPN配置
                         return Ok(WgConf {
                             address: format!("{}/24", intranet_ip),
