@@ -1,4 +1,4 @@
 [submodule "libwg/wireguard-go"]
 	path = libwg/wireguard-go
 	url = https://github.com/a1ickgu0/wireguard-go.git
-	branch = local-keepalive
+	branch = local-keepalive-20250522
