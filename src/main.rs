@@ -333,6 +333,7 @@ async fn main() -> anyhow::Result<()> {
                     protocol_mode: None,
                     performance: None,
                     qr_image_size: None,
+                    qr_display: None,
                 })
             }
     }?;

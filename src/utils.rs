@@ -79,8 +79,30 @@ pub async fn send_feishu_message(robot_url: &str, message: &str) -> Result<()> {
         .send()
         .await
         .context("failed to send feishu message")?;
-    
+
     Ok(())
+}
+
+/// 查询 stdout 的终端尺寸 (列, 行)；非 tty（重定向/管道）或查询失败时返回 None。
+/// 用于判断终端二维码能否完整放下（换行会直接破坏二维码图形）。
+pub fn terminal_size() -> Option<(usize, usize)> {
+    #[cfg(unix)]
+    {
+        use std::mem::MaybeUninit;
+        unsafe {
+            let mut ws: MaybeUninit<libc::winsize> = MaybeUninit::uninit();
+            if libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, ws.as_mut_ptr()) != 0 {
+                return None;
+            }
+            let ws = ws.assume_init();
+            if ws.ws_col == 0 || ws.ws_row == 0 {
+                return None;
+            }
+            Some((ws.ws_col as usize, ws.ws_row as usize))
+        }
+    }
+    #[cfg(not(unix))]
+    None
 }
 
 /// 用系统默认程序打开文件（弹出二维码图片等）：macOS=`open`、Linux=`xdg-open`、Windows=`cmd /C start`。
@@ -259,5 +281,18 @@ pub fn resolve_dns(domain: &str) -> bool {
             !output_str.is_empty() && output.status.success()
         },
         Err(_) => false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// cargo test 捕获输出时 stdout 是管道：terminal_size 必须返回 None。
+    /// （tty 分支无法在测试里稳定构造：script 分配的是无尺寸的退化 pty，col=0。）
+    #[test]
+    fn terminal_size_none_when_piped() {
+        let is_tty = unsafe { libc::isatty(libc::STDOUT_FILENO) == 1 };
+        if !is_tty {
+            assert!(super::terminal_size().is_none());
+        }
     }
 }

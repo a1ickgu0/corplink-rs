@@ -103,12 +103,24 @@ pub fn get_performance_config() -> (u32, u32, u32, u32, u32, u32) {
     }
 }
 
-#[allow(dead_code)]
 pub fn get_performance_metrics() -> (u64, u64, u64, u64) {
     unsafe {
         let result = libwg::getPerformanceMetrics();
         (result.r0, result.r1, result.r2, result.r3)
     }
+}
+
+/// 周期性输出隧道吞吐统计（聚合自 libwg 各 peer 的传输计数器），
+/// 用于诊断数据面是否在转发流量以及吞吐水平。
+pub fn log_wg_metrics() {
+    let (tx_bytes, rx_bytes, tx_packets, rx_packets) = get_performance_metrics();
+    log::info!(
+        "wg tunnel metrics: tx={} bytes / {} packets, rx={} bytes / {} packets",
+        tx_bytes,
+        tx_packets,
+        rx_bytes,
+        rx_packets
+    );
 }
 
 pub fn start_wg_go(name: &str, protocol: i32, with_log: bool) -> Result<()> {
@@ -209,6 +221,9 @@ impl UAPIClient {
         
         loop {
             ticker.tick().await;
+
+            // 随握手检查周期输出吞吐统计，观察数据面是否持续转发
+            log_wg_metrics();
 
             let name = self.name.as_str();
             let data = match uapi(b"get=1\n\n") {

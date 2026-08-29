@@ -59,6 +59,8 @@ pub struct Config {
     pub performance: Option<PerformanceConfig>,
     /// 二维码以 SVG 图片弹窗显示时的目标边长（像素）；缺省走终端半块渲染或默认尺寸。
     pub qr_image_size: Option<u32>,
+    /// 登录二维码的显示方式：auto（默认，终端放得下就终端渲染、放不下自动图片弹窗）/ terminal（强制终端）/ png（强制弹窗）/ both（两者都显示）。
+    pub qr_display: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

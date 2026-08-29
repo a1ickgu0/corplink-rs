@@ -3,6 +3,11 @@ use std::io::Write;
 use terminal_graphics::Colour;
 use terminal_graphics::Display;
 
+/// 二维码 PNG 的默认落盘路径（与 open_as_png 一致，供日志提示用户手动打开）。
+pub fn png_path() -> std::path::PathBuf {
+    std::env::temp_dir().join("corplink_qr.png")
+}
+
 #[derive(Clone)]
 pub struct TerminalQrCode {
     code: QrCode,
@@ -16,6 +21,17 @@ impl TerminalQrCode {
             QrCode::new("QR code generation failed").unwrap()
         });
         TerminalQrCode { code }
+    }
+
+    /// 终端渲染所需的列数（模块数 + 两侧留白列）。超过终端宽度时渲染会换行，
+    /// 换行即破坏二维码图形，调用方应改用图片弹窗。
+    pub fn columns_needed(&self) -> usize {
+        self.code.width() + 2
+    }
+
+    /// 终端渲染所需的行数（半块压缩后 + 上下留白行）。
+    pub fn rows_needed(&self) -> usize {
+        (self.code.width() + 1) / 2 + 2
     }
 
     pub fn print(&self) {
@@ -72,7 +88,7 @@ impl TerminalQrCode {
         // 输出路径可被环境变量覆盖（GUI 模式下指向固定路径 /tmp/corplink_qr.png）
         let path = match std::env::var("CORPLINK_QR_PATH") {
             Ok(p) if !p.is_empty() => std::path::PathBuf::from(p),
-            _ => std::env::temp_dir().join("corplink_qr.png"),
+            _ => png_path(),
         };
         // image::ImageBuffer::save 依赖 image crate 的 png 编码器（见 Cargo.toml features）
         image
@@ -84,5 +100,17 @@ impl TerminalQrCode {
             crate::utils::open_file(&path.to_string_lossy())?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 渲染冒烟测试：`cargo test -- --nocapture` 可在终端直接看到二维码效果
+    #[test]
+    fn print_renders_without_panic() {
+        let qr = TerminalQrCode::from_bytes("https://example.com/otp?token=abc123".as_bytes());
+        qr.print();
     }
 }
