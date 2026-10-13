@@ -3,7 +3,7 @@ import UniformTypeIdentifiers
 import WebKit
 
 enum VPNState: String {
-    case disconnected, connecting, connected, intranet, stopping
+    case disconnected, connecting, verifying, connected, intranet, stopping
     case unavailable
 }
 
@@ -100,7 +100,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKUI
         case .disconnected:
             action = "start"
             body = ["name": "default"]
-        case .connecting, .connected, .intranet:
+        case .connecting, .verifying, .connected, .intranet:
             action = "stop"
             body = [:]
         case .stopping, .unavailable:
@@ -242,6 +242,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKUI
             symbolName = "arrow.triangle.2.circlepath"
             button.contentTintColor = .systemOrange
             button.toolTip = "CorpLink · VPN 连接中"
+            toggleItem.title = "取消连接"
+            toggleItem.isEnabled = true
+        case .verifying:
+            symbolName = "arrow.triangle.2.circlepath"
+            button.contentTintColor = .systemOrange
+            button.toolTip = "CorpLink · 等待 VPN 握手"
             toggleItem.title = "取消连接"
             toggleItem.isEnabled = true
         case .connected:

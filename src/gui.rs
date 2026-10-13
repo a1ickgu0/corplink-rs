@@ -18,6 +18,7 @@ const GUI_STATUS_PREFIX: &str = "[CORPLINK_GUI_STATUS] ";
 enum ConnectionStatus {
     Disconnected,
     Connecting,
+    Verifying,
     Connected,
     Intranet,
     Stopping,
@@ -27,6 +28,7 @@ impl ConnectionStatus {
     fn from_signal(value: &str) -> Option<Self> {
         match value {
             "connecting" => Some(Self::Connecting),
+            "verifying" => Some(Self::Verifying),
             "connected" => Some(Self::Connected),
             "intranet" => Some(Self::Intranet),
             _ => None,

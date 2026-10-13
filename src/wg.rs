@@ -211,25 +211,32 @@ impl UAPIClient {
     }
 
     pub async fn check_wg_connection(&mut self) {
-        // default refresh key timeout of wg is 2 min
-        // we set wg connection timeout to 5 min
-        let interval = time::Duration::from_secs(5 * 60);
-        // 每120秒检查一次握手时间，平衡检测速度和资源消耗
-        let mut ticker = tokio::time::interval(time::Duration::from_secs(120));
-        // consume the first tick
-        ticker.tick().await;
-        
-        loop {
-            ticker.tick().await;
+        let handshake_timeout = time::Duration::from_secs(45);
+        let stale_interval = time::Duration::from_secs(5 * 60);
+        let started = time::Instant::now();
+        let mut verified = false;
 
-            // 随握手检查周期输出吞吐统计，观察数据面是否持续转发
-            log_wg_metrics();
+        loop {
+            // 首次握手需要及时确认；建立后按原来的 120 秒周期检查。
+            let poll_interval = if verified {
+                time::Duration::from_secs(120)
+            } else {
+                time::Duration::from_secs(2)
+            };
+            tokio::time::sleep(poll_interval).await;
+
+            if verified {
+                log_wg_metrics();
+            }
 
             let name = self.name.as_str();
             let data = match uapi(b"get=1\n\n") {
                 Ok(data) => data,
                 Err(e) => {
                     log::warn!("failed to call uapi for {}: {}", name, e);
+                    if !verified && started.elapsed() >= handshake_timeout {
+                        return;
+                    }
                     continue;
                 }
             };
@@ -237,68 +244,50 @@ impl UAPIClient {
                 Ok(s) => s,
                 Err(err) => {
                     log::warn!("failed to parse uapi response for {}: {}", name, err);
+                    if !verified && started.elapsed() >= handshake_timeout {
+                        return;
+                    }
                     continue;
                 }
             };
-            
-            let mut handshake_found = false;
-            for line in s.split('\n') {
-                if line.starts_with("last_handshake_time_sec") {
-                    handshake_found = true;
-                    let last = match line.trim_end().split('=').next_back() {
-                        Some(v) => v,
-                        None => {
-                            log::warn!("unexpected uapi line: {}", line);
-                            continue;
-                        }
-                    };
-                    match last.parse::<i64>() {
-                        Ok(timestamp) => {
-                            if timestamp == 0 {
-                                // 握手时间为0，可能是连接刚建立或已断开
-                                log::warn!("last handshake time is 0, connection may be broken");
-                                return; // 立即返回，触发重连
-                            } else if let Some(nt) = chrono::DateTime::from_timestamp(timestamp, 0) {
-                                let now = chrono::Utc::now().to_utc();
-                                let t = now - nt;
-                                let tt = nt.to_utc();
-                                let lt = tt.with_timezone(&chrono::Local);
-                                if let Ok(elapsed) = t.to_std() {
-                                    let elapsed = elapsed.as_secs_f32();
-                                    log::info!("last handshake is at {lt}, elapsed time {elapsed}s");
-                                    if let Ok(interval_dur) = chrono::Duration::from_std(interval) {
-                                        if t > interval_dur {
-                                            log::warn!(
-                                                "last handshake is at {}, elapsed time {}s more than {}s",
-                                                lt,
-                                                elapsed,
-                                                interval.as_secs()
-                                            );
-                                            return; // 握手超时，立即返回，触发重连
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        Err(err) => {
-                            log::warn!("parse last handshake of {} fail: {}", name, err)
-                        }
-                    }
-                    break;
-                } else if line.starts_with("errno") {
-                    if line != "errno=0" {
-                        log::warn!("uapi of {} return: fail: {}", name, line)
-                    }
-                } else if line.is_empty() {
-                    // reach end
-                    break;
+            let handshake = s
+                .lines()
+                .find_map(|line| line.strip_prefix("last_handshake_time_sec="))
+                .and_then(|value| value.trim().parse::<i64>().ok());
+
+            let Some(timestamp) = handshake else {
+                if verified || started.elapsed() >= handshake_timeout {
+                    log::warn!("no valid handshake time from {}, reconnecting", name);
+                    return;
                 }
+                continue;
+            };
+            if timestamp == 0 {
+                if verified || started.elapsed() >= handshake_timeout {
+                    log::warn!(
+                        "VPN handshake not established within {}s, reconnecting",
+                        handshake_timeout.as_secs()
+                    );
+                    return;
+                }
+                continue;
             }
-            
-            // 如果没有找到握手时间，可能是连接已断开
-            if !handshake_found {
-                log::warn!("no handshake time found in uapi response, connection may be broken");
-                return; // 立即返回，触发重连
+            let Some(handshake_at) = chrono::DateTime::from_timestamp(timestamp, 0) else {
+                log::warn!("invalid handshake timestamp from {}, reconnecting", name);
+                return;
+            };
+            let elapsed = chrono::Utc::now().signed_duration_since(handshake_at);
+            if elapsed < chrono::Duration::zero()
+                || elapsed > chrono::Duration::from_std(stale_interval).unwrap()
+            {
+                log::warn!("VPN handshake is stale or invalid, reconnecting");
+                return;
+            }
+
+            if !verified {
+                verified = true;
+                log::info!("VPN handshake confirmed");
+                crate::signal_gui_status("connected");
             }
         }
     }

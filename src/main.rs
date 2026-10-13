@@ -727,7 +727,7 @@ const MAX_RETRY_INTERVAL_SECONDS: u64 = 10;
                 }
             }
 
-            signal_gui_status("connected");
+            signal_gui_status("verifying");
 
             tokio::select! {
                 // handle signal
