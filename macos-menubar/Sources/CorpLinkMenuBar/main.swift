@@ -236,7 +236,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKUI
             symbolName = "shield.slash"
             button.contentTintColor = .secondaryLabelColor
             button.toolTip = "CorpLink · VPN 未连接"
-            toggleItem.title = "打开 VPN"
+            toggleItem.title = "连接 VPN"
             toggleItem.isEnabled = true
         case .connecting:
             symbolName = "arrow.triangle.2.circlepath"
