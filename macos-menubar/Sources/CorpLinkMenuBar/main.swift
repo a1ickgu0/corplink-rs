@@ -2,6 +2,11 @@ import AppKit
 import UniformTypeIdentifiers
 import WebKit
 
+enum VPNState: String {
+    case disconnected, connecting, connected, intranet, stopping
+    case unavailable
+}
+
 @main
 enum CorpLinkMenuBar {
     static func main() {
@@ -13,14 +18,16 @@ enum CorpLinkMenuBar {
     }
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKUIDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKUIDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
     private var window: NSWindow?
     private var webView: WKWebView?
     private let backend = BackendController()
-    private var openItem: NSMenuItem!
-    private var disconnectItem: NSMenuItem!
+    private var toggleItem: NSMenuItem!
     private var refreshTimer: Timer?
+    private var vpnState: VPNState = .unavailable
+    private var refreshSequence = 0
+    private var actionInFlight = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         configureStatusItem()
@@ -50,21 +57,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKUI
     }
 
     private func configureStatusItem() {
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         if let button = statusItem.button {
-            button.title = "● CorpLink"
+            button.title = ""
+            button.image = NSImage(systemSymbolName: "network", accessibilityDescription: "CorpLink VPN")
+            button.image?.isTemplate = true
+            button.imagePosition = .imageOnly
             button.contentTintColor = .secondaryLabelColor
-            button.toolTip = "CorpLink VPN"
+            button.toolTip = "CorpLink · 服务不可用"
         }
 
         let menu = NSMenu()
-        openItem = NSMenuItem(title: "打开 CorpLink", action: #selector(openClicked), keyEquivalent: "o")
+        menu.delegate = self
+        let openItem = NSMenuItem(title: "打开管理窗口", action: #selector(openClicked), keyEquivalent: "o")
         openItem.target = self
         menu.addItem(openItem)
-        disconnectItem = NSMenuItem(title: "断开 VPN", action: #selector(disconnectClicked), keyEquivalent: "")
-        disconnectItem.target = self
-        disconnectItem.isEnabled = false
-        menu.addItem(disconnectItem)
+        toggleItem = NSMenuItem(title: "VPN 服务不可用", action: #selector(toggleVPNClicked), keyEquivalent: "")
+        toggleItem.target = self
+        toggleItem.isEnabled = false
+        menu.addItem(toggleItem)
         let configItem = NSMenuItem(title: "选择默认配置…", action: #selector(chooseConfig), keyEquivalent: "")
         configItem.target = self
         menu.addItem(configItem)
@@ -81,12 +92,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKUI
 
     @objc private func openClicked() { openWindow() }
 
-    @objc private func disconnectClicked() {
-        backend.perform("stop") { [weak self] result in
-            if case .failure(let error) = result { self?.showMessage(error.localizedDescription) }
-            self?.refreshStatus()
+    @objc private func toggleVPNClicked() {
+        guard !actionInFlight else { return }
+        let action: String
+        let body: [String: String]
+        switch vpnState {
+        case .disconnected:
+            action = "start"
+            body = ["name": "default"]
+        case .connecting, .connected, .intranet:
+            action = "stop"
+            body = [:]
+        case .stopping, .unavailable:
+            return
+        }
+        actionInFlight = true
+        refreshSequence += 1
+        applyStatus(action == "start" ? .connecting : .stopping)
+        backend.perform(action, body: body) { [weak self] result in
+            DispatchQueue.main.async {
+                self?.actionInFlight = false
+                if case .failure(let error) = result { self?.showMessage(error.localizedDescription) }
+                self?.refreshStatus()
+            }
         }
     }
+
+    func menuWillOpen(_ menu: NSMenu) { refreshStatus() }
 
     @objc private func chooseBinary() {
         let panel = NSOpenPanel()
@@ -184,13 +216,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKUI
     }
 
     private func refreshStatus() {
-        backend.readState { [weak self] connected, _ in
+        guard !actionInFlight else { return }
+        refreshSequence += 1
+        let sequence = refreshSequence
+        backend.readState { [weak self] state, ready in
             DispatchQueue.main.async {
-                guard let self, let button = self.statusItem.button else { return }
-                button.contentTintColor = connected ? .systemGreen : .secondaryLabelColor
-                self.disconnectItem.isEnabled = connected
+                guard let self, sequence == self.refreshSequence else { return }
+                self.applyStatus(ready ? state : .unavailable)
             }
         }
+    }
+
+    private func applyStatus(_ state: VPNState) {
+        vpnState = state
+        guard let button = statusItem.button else { return }
+        switch state {
+        case .disconnected:
+            button.contentTintColor = .secondaryLabelColor
+            button.toolTip = "CorpLink · VPN 未连接"
+            toggleItem.title = "打开 VPN"
+            toggleItem.isEnabled = true
+        case .connecting:
+            button.contentTintColor = .systemOrange
+            button.toolTip = "CorpLink · VPN 连接中"
+            toggleItem.title = "取消连接"
+            toggleItem.isEnabled = true
+        case .connected:
+            button.contentTintColor = .systemGreen
+            button.toolTip = "CorpLink · VPN 已连接"
+            toggleItem.title = "断开 VPN"
+            toggleItem.isEnabled = true
+        case .intranet:
+            button.contentTintColor = .systemBlue
+            button.toolTip = "CorpLink · 企业内网模式"
+            toggleItem.title = "断开连接"
+            toggleItem.isEnabled = true
+        case .stopping:
+            button.contentTintColor = .systemOrange
+            button.toolTip = "CorpLink · 正在断开"
+            toggleItem.title = "正在断开…"
+            toggleItem.isEnabled = false
+        case .unavailable:
+            button.contentTintColor = .secondaryLabelColor
+            button.toolTip = "CorpLink · 服务不可用"
+            toggleItem.title = "VPN 服务不可用"
+            toggleItem.isEnabled = false
+        }
+        if actionInFlight { toggleItem.isEnabled = false }
     }
 
     private func showMessage(_ message: String) {
@@ -272,7 +344,7 @@ final class BackendController {
         }
     }
 
-    func perform(_ action: String, completion: ((Result<Void, Error>) -> Void)? = nil) {
+    func perform(_ action: String, body: [String: String] = [:], completion: ((Result<Void, Error>) -> Void)? = nil) {
         guard let base = url, let token = URLComponents(url: base, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "token" })?.value else {
             completion?(.failure(BackendError.notReady))
             return
@@ -283,7 +355,7 @@ final class BackendController {
         guard let endpoint = components.url else { completion?(.failure(BackendError.badURL)); return }
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
-        request.httpBody = Data("{}".utf8)
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         URLSession.shared.dataTask(with: request) { _, response, error in
@@ -296,20 +368,28 @@ final class BackendController {
         }.resume()
     }
 
-    func readState(completion: @escaping (Bool, Bool) -> Void) {
+    func readState(completion: @escaping (VPNState, Bool) -> Void) {
         guard let base = url, let token = URLComponents(url: base, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "token" })?.value else {
-            completion(false, false)
+            completion(.unavailable, false)
             return
         }
         var components = URLComponents(url: base, resolvingAgainstBaseURL: false)!
         components.path = "/api/state"
         components.query = nil
-        guard let endpoint = components.url else { completion(false, false); return }
+        guard let endpoint = components.url else { completion(.unavailable, false); return }
         var request = URLRequest(url: endpoint)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        URLSession.shared.dataTask(with: request) { data, _, _ in
-            let connected = (try? JSONSerialization.jsonObject(with: data ?? Data())) as? [String: Any]
-            completion(connected?["connected"] as? Bool ?? false, connected != nil)
+        URLSession.shared.dataTask(with: request) { data, response, _ in
+            guard let response = response as? HTTPURLResponse,
+                  (200..<300).contains(response.statusCode),
+                  let data,
+                  let payload = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                  let rawStatus = payload["status"] as? String,
+                  let status = VPNState(rawValue: rawStatus) else {
+                completion(.unavailable, false)
+                return
+            }
+            completion(status, true)
         }.resume()
     }
 

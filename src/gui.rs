@@ -11,6 +11,28 @@ use tokio::net::{TcpListener, TcpStream};
 
 const MAX_REQUEST_SIZE: usize = 1_048_576;
 const MAX_LOG_LINES: usize = 500;
+const GUI_STATUS_PREFIX: &str = "[CORPLINK_GUI_STATUS] ";
+
+#[derive(Clone, Copy, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ConnectionStatus {
+    Disconnected,
+    Connecting,
+    Connected,
+    Intranet,
+    Stopping,
+}
+
+impl ConnectionStatus {
+    fn from_signal(value: &str) -> Option<Self> {
+        match value {
+            "connecting" => Some(Self::Connecting),
+            "connected" => Some(Self::Connected),
+            "intranet" => Some(Self::Intranet),
+            _ => None,
+        }
+    }
+}
 
 #[derive(Clone)]
 struct AppState {
@@ -25,6 +47,7 @@ struct Runtime {
     child: Option<Child>,
     stdin: Option<ChildStdin>,
     profile: Option<String>,
+    status: ConnectionStatus,
     logs: VecDeque<String>,
     last_exit: Option<String>,
 }
@@ -32,6 +55,8 @@ struct Runtime {
 #[derive(Serialize)]
 struct StateResponse {
     connected: bool,
+    running: bool,
+    status: ConnectionStatus,
     profile: Option<String>,
     profiles: Vec<String>,
     default_config_name: String,
@@ -90,6 +115,7 @@ pub async fn run(config_override: Option<PathBuf>) -> anyhow::Result<()> {
             child: None,
             stdin: None,
             profile: None,
+            status: ConnectionStatus::Disconnected,
             logs: VecDeque::new(),
             last_exit: None,
         })),
@@ -417,10 +443,13 @@ fn state_response(state: &AppState) -> anyhow::Result<StateResponse> {
             runtime.child = None;
             runtime.stdin = None;
             runtime.profile = None;
+            runtime.status = ConnectionStatus::Disconnected;
         }
     }
     Ok(StateResponse {
-        connected: runtime.child.is_some(),
+        connected: runtime.status == ConnectionStatus::Connected,
+        running: runtime.child.is_some() || runtime.status == ConnectionStatus::Stopping,
+        status: runtime.status,
         profile: runtime.profile.clone(),
         profiles: profiles(state)?,
         default_config_name: state
@@ -445,23 +474,26 @@ fn start_client(state: &AppState, name: &str, config: PathBuf) -> Result<(), Str
             .unwrap_or(true),
         None => false,
     };
-    if already_running {
+    if already_running || runtime.status == ConnectionStatus::Stopping {
         return Err("客户端已经在运行".to_string());
     }
     runtime.child = None;
     runtime.stdin = None;
     runtime.profile = None;
+    runtime.status = ConnectionStatus::Disconnected;
     runtime.logs.clear();
     runtime.last_exit = None;
     let executable = std::env::current_exe().map_err(|error| error.to_string())?;
     let mut child = Command::new(executable)
         .arg(&config)
+        .env("CORPLINK_GUI_STATE_SIGNAL", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|error| format!("无法启动客户端: {error}"))?;
 
+    runtime.status = ConnectionStatus::Connecting;
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     runtime.stdin = child.stdin.take();
@@ -477,6 +509,16 @@ fn start_client(state: &AppState, name: &str, config: PathBuf) -> Result<(), Str
             std::thread::spawn(move || {
                 for line in BufReader::new(stream).lines().flatten() {
                     if let Ok(mut runtime) = logs.lock() {
+                        if let Some(signal) = line.strip_prefix(GUI_STATUS_PREFIX) {
+                            if runtime.child.is_some()
+                                && runtime.status != ConnectionStatus::Stopping
+                            {
+                                if let Some(status) = ConnectionStatus::from_signal(signal) {
+                                    runtime.status = status;
+                                }
+                            }
+                            continue;
+                        }
                         runtime.logs.push_back(line);
                         while runtime.logs.len() > MAX_LOG_LINES {
                             runtime.logs.pop_front();
@@ -502,8 +544,10 @@ async fn stop_client(state: AppState) -> Result<(), String> {
             runtime.stdin = None;
             let Some(child) = runtime.child.take() else {
                 runtime.profile = None;
+                runtime.status = ConnectionStatus::Disconnected;
                 return Ok(());
             };
+            runtime.status = ConnectionStatus::Stopping;
             runtime.logs.push_back("[GUI] 正在停止客户端…".to_string());
             child
         };
@@ -543,6 +587,7 @@ async fn stop_client(state: AppState) -> Result<(), String> {
                 .lock()
                 .map_err(|_| "运行状态锁定失败".to_string())?;
             runtime.profile = None;
+            runtime.status = ConnectionStatus::Disconnected;
             runtime.last_exit = Some(match exit_status.code() {
                 Some(code) if code != 0 => format!("客户端已停止（退出码 {code}）"),
                 _ => "客户端已断开".to_string(),

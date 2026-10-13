@@ -21,6 +21,14 @@ use chrono::{DateTime, Local};
 use flexi_logger::{Logger, FileSpec, WriteMode, DeferredNow, Record, LoggerHandle};
 use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
+use std::io::Write;
+
+fn signal_gui_status(status: &str) {
+    if std::env::var_os("CORPLINK_GUI_STATE_SIGNAL").as_deref() == Some(std::ffi::OsStr::new("1")) {
+        println!("[CORPLINK_GUI_STATUS] {status}");
+        let _ = std::io::stdout().flush();
+    }
+}
 
 /// 自定义日志格式
 fn log_format(writer: &mut dyn std::io::Write, now: &mut DeferredNow, record: &Record) -> std::io::Result<()> {
@@ -478,6 +486,7 @@ const MAX_RETRY_INTERVAL_SECONDS: u64 = 10;
 
     // 外层循环用于支持VPN重连
     loop {
+        signal_gui_status("connecting");
         let wg_conf: Option<WgConf>;
         
         // 登录和连接VPN的逻辑 - 添加全局重试机制
@@ -620,6 +629,7 @@ const MAX_RETRY_INTERVAL_SECONDS: u64 = 10;
         // 检查是否在内网环境
         if wg_conf.use_intranet {
             log::info!("在内网环境，跳过WireGuard启动和配置");
+            signal_gui_status("intranet");
             
             // 获取接口地址并发送飞书消息
             let intranet_ip = wg_conf.address.split('/').next().unwrap_or("unknown");
@@ -717,6 +727,8 @@ const MAX_RETRY_INTERVAL_SECONDS: u64 = 10;
                 }
             }
 
+            signal_gui_status("connected");
+
             tokio::select! {
                 // handle signal
                 _ = wait_for_shutdown() => {
@@ -739,6 +751,7 @@ const MAX_RETRY_INTERVAL_SECONDS: u64 = 10;
             }
 
             // shutdown
+            signal_gui_status("connecting");
             log::info!("disconnecting vpn...");
             // 先停止WireGuard服务，再断开VPN连接
             // 这样可以避免在断开连接时产生网络连接已关闭的错误
@@ -779,6 +792,8 @@ const MAX_RETRY_INTERVAL_SECONDS: u64 = 10;
                 DNSManager::global_restore_dns();
             }
         }
+
+        signal_gui_status("connecting");
 
         // 如果是用户主动退出，则退出程序
         if should_exit {

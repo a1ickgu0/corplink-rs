@@ -83,6 +83,10 @@
     .status-indicator::after { content: ""; width: 13px; height: 13px; border-radius: 50%; background: #90949e; }
     .status-indicator.on { background: #e7f5ec; }
     .status-indicator.on::after { background: var(--success); box-shadow: 0 0 0 4px rgba(36, 132, 80, .12); }
+    .status-indicator.connecting, .status-indicator.stopping { background: #fff2dc; }
+    .status-indicator.connecting::after, .status-indicator.stopping::after { background: var(--warning); }
+    .status-indicator.intranet { background: var(--accent-soft); }
+    .status-indicator.intranet::after { background: var(--accent); }
     .status-heading h1 { margin: -1px 0 4px; font-size: clamp(24px, 2.4vw, 29px); line-height: 1.18; letter-spacing: -.035em; font-weight: 710; }
     .status-heading p { margin: 0; max-width: 34em; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
     .control-label { display: block; margin: 1px 0 7px; color: var(--muted); font-size: 12px; font-weight: 620; }
@@ -192,6 +196,7 @@
       button.primary { color: #102441; }
       .status-indicator { background: #383a40; }
       .status-indicator.on { background: #254232; }
+      .status-indicator.connecting, .status-indicator.stopping { background: #493b29; }
       button:hover:not(:disabled) { background: #393b42; }
       button.quiet:hover:not(:disabled) { background: var(--accent-soft); }
     }
@@ -400,13 +405,15 @@
         const data = await api('/api/state');
         syncProfiles(data.profiles, data.default_config_name);
         if (!dirty && $('editorMeta').textContent === '默认配置') updateEditorMeta();
-        $('dot').classList.toggle('on', data.connected);
-        $('stateText').textContent = data.connected ? '客户端运行中' : '未连接';
-        $('sub').textContent = data.connected
+        const status = data.status || (data.connected ? 'connected' : 'disconnected');
+        $('dot').className = 'status-indicator' + ({connected: ' on', connecting: ' connecting', intranet: ' intranet', stopping: ' stopping'}[status] || '');
+        $('stateText').textContent = ({connected: 'VPN 已连接', connecting: '正在连接', intranet: '企业内网模式', stopping: '正在断开', disconnected: '未连接'})[status] || '状态未知';
+        $('sub').textContent = data.running
           ? '正在使用 ' + (data.profile === 'default' ? '默认配置' : data.profile || '当前配置')
           : data.last_exit || '选择配置后连接企业网络';
-        $('start').disabled = data.connected;
-        $('stop').disabled = !data.connected;
+        $('start').disabled = data.running;
+        $('stop').disabled = !data.running || status === 'stopping';
+        $('stop').textContent = status === 'connecting' ? '取消连接' : status === 'intranet' ? '断开连接' : '断开';
         renderLogs(data.logs);
       } catch (error) {
         $('stateText').textContent = '服务不可用';
