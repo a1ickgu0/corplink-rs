@@ -60,7 +60,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKUI
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         if let button = statusItem.button {
             button.title = ""
-            button.image = NSImage(systemSymbolName: "network", accessibilityDescription: "CorpLink VPN")
+            button.image = NSImage(systemSymbolName: "xmark.shield", accessibilityDescription: "CorpLink VPN")
             button.image?.isTemplate = true
             button.imagePosition = .imageOnly
             button.contentTintColor = .secondaryLabelColor
@@ -230,38 +230,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKUI
     private func applyStatus(_ state: VPNState) {
         vpnState = state
         guard let button = statusItem.button else { return }
+        let symbolName: String
         switch state {
         case .disconnected:
+            symbolName = "shield.slash"
             button.contentTintColor = .secondaryLabelColor
             button.toolTip = "CorpLink · VPN 未连接"
             toggleItem.title = "打开 VPN"
             toggleItem.isEnabled = true
         case .connecting:
+            symbolName = "arrow.triangle.2.circlepath"
             button.contentTintColor = .systemOrange
             button.toolTip = "CorpLink · VPN 连接中"
             toggleItem.title = "取消连接"
             toggleItem.isEnabled = true
         case .connected:
+            symbolName = "checkmark.shield.fill"
             button.contentTintColor = .systemGreen
             button.toolTip = "CorpLink · VPN 已连接"
             toggleItem.title = "断开 VPN"
             toggleItem.isEnabled = true
         case .intranet:
+            symbolName = "building.2"
             button.contentTintColor = .systemBlue
             button.toolTip = "CorpLink · 企业内网模式"
             toggleItem.title = "断开连接"
             toggleItem.isEnabled = true
         case .stopping:
+            symbolName = "arrow.triangle.2.circlepath"
             button.contentTintColor = .systemOrange
             button.toolTip = "CorpLink · 正在断开"
             toggleItem.title = "正在断开…"
             toggleItem.isEnabled = false
         case .unavailable:
+            symbolName = "xmark.shield"
             button.contentTintColor = .secondaryLabelColor
             button.toolTip = "CorpLink · 服务不可用"
             toggleItem.title = "VPN 服务不可用"
             toggleItem.isEnabled = false
         }
+        button.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: button.toolTip)
+            ?? NSImage(systemSymbolName: "network", accessibilityDescription: button.toolTip)
+        button.image?.isTemplate = true
         if actionInFlight { toggleItem.isEnabled = false }
     }
 
