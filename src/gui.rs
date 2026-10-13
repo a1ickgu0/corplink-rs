@@ -235,6 +235,15 @@ async fn handle_connection(mut stream: TcpStream, state: AppState) -> anyhow::Re
     let path = target.split('?').next().unwrap_or("/");
 
     if method == "GET" && path == "/" {
+        if query_value(target, "token").as_deref() != Some(state.token.as_str()) {
+            return write_response(
+                &mut stream,
+                401,
+                "application/json",
+                "{\"error\":\"unauthorized\"}",
+            )
+            .await;
+        }
         let token_script = format!(
             "<script>window.CORPLINK_TOKEN={}</script>",
             serde_json::to_string(&state.token)?
