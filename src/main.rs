@@ -2,6 +2,7 @@ mod api;
 mod client;
 mod config;
 mod dns;
+mod gui;
 mod performance;
 mod qrcode;
 mod resp;
@@ -17,8 +18,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::Notify;
 use log;
 use chrono::{DateTime, Local};
-use flexi_logger::{Logger, FileSpec, WriteMode, DeferredNow, Record, LoggerHandle, FlexiLoggerError};
-use std::path::PathBuf;
+use flexi_logger::{Logger, FileSpec, WriteMode, DeferredNow, Record, LoggerHandle};
+use std::fs::{self, OpenOptions};
+use std::path::{Path, PathBuf};
 
 /// 自定义日志格式
 fn log_format(writer: &mut dyn std::io::Write, now: &mut DeferredNow, record: &Record) -> std::io::Result<()> {
@@ -32,89 +34,65 @@ fn log_format(writer: &mut dyn std::io::Write, now: &mut DeferredNow, record: &R
     )
 }
 
-/// 初始化日志系统，使用指定的日志目录和日志级别或默认值
+fn writable_log_directory(path: &Path) -> bool {
+    if fs::create_dir_all(path).is_err() {
+        return false;
+    }
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let probe_path = path.join(format!(".corplink-write-probe-{}-{nonce}", std::process::id()));
+    match OpenOptions::new().write(true).create_new(true).open(&probe_path) {
+        Ok(probe) => {
+            drop(probe);
+            let _ = fs::remove_file(probe_path);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// 优先使用配置指定的可写目录；GUI 默认写入本机应用数据目录。
 fn initialize_logger(log_directory: Option<&str>, log_level: Option<&str>) -> LoggerHandle {
-    // 从配置中获取log_directory
-    let log_dir = if let Some(dir) = log_directory {
-        PathBuf::from(dir)
-    } else {
-        PathBuf::from(".")
-    };
-    
-    // 使用指定的日志级别或默认级别"info"
     let log_level = log_level.unwrap_or("info");
-    
-    // 使用Box<dyn FnOnce()>统一闭包类型
-    let loggers: Vec<Box<dyn FnOnce() -> Result<LoggerHandle, FlexiLoggerError>>> = vec![
-        // 1. 配置文件指定的目录
-        Box::new(move || {
-            let log_file_path = FileSpec::default()
-                .directory(&log_dir)  // 使用配置文件中的日志目录
-                .basename("corplink")  // 日志文件基础名称
-                .suffix("log");  // 日志文件后缀
-            Logger::try_with_env_or_str(log_level)
-                .unwrap()
-                .log_to_file(log_file_path)
-                .write_mode(WriteMode::BufferAndFlush)
-                .format(log_format)
-                .duplicate_to_stderr(flexi_logger::Duplicate::All)
-                .start()
-        }),
-        // 2. 当前目录
-        Box::new(|| {
-            let log_file_path = FileSpec::default()
-                .directory(".")  // 日志文件放在程序当前目录
-                .basename("corplink")  // 日志文件基础名称
-                .suffix("log");  // 日志文件后缀
-            Logger::try_with_env_or_str(log_level)
-                .unwrap()
-                .log_to_file(log_file_path)
-                .write_mode(WriteMode::BufferAndFlush)
-                .format(log_format)
-                .duplicate_to_stderr(flexi_logger::Duplicate::All)
-                .start()
-        }),
-        // 3. 临时目录
-        Box::new(|| {
-            let temp_dir = std::env::temp_dir();
-            let log_file_path = FileSpec::default()
-                .directory(temp_dir)
-                .basename("corplink")
-                .suffix("log");
-            Logger::try_with_env_or_str(log_level)
-                .unwrap()
-                .log_to_file(log_file_path)
-                .write_mode(WriteMode::BufferAndFlush)
-                .format(log_format)
-                .duplicate_to_stderr(flexi_logger::Duplicate::All)
-                .start()
-        }),
-        // 4. 仅控制台输出（作为最后的备选）
-        Box::new(|| {
-            Logger::try_with_env_or_str(log_level)
-                .unwrap()
-                .format(log_format)
-                .duplicate_to_stderr(flexi_logger::Duplicate::All)
-                .start()
-        })
-    ];
-    
-    // 尝试初始化日志系统，使用第一个成功的配置
-    for logger in loggers {
-        if let Ok(handle) = logger() {
+    let mut directories = Vec::new();
+    if let Some(path) = log_directory.filter(|path| !path.trim().is_empty()) {
+        directories.push(PathBuf::from(path));
+    }
+    if let Some(home) = std::env::var_os("CORPLINK_GUI_HOME") {
+        directories.push(PathBuf::from(home).join("logs"));
+    }
+    directories.push(PathBuf::from("."));
+    directories.push(std::env::temp_dir());
+
+    for directory in directories {
+        if !writable_log_directory(&directory) {
+            continue;
+        }
+        let file_spec = FileSpec::default()
+            .directory(directory)
+            .basename("corplink")
+            .suffix("log");
+        if let Ok(handle) = Logger::try_with_env_or_str(log_level)
+            .unwrap()
+            .log_to_file(file_spec)
+            .write_mode(WriteMode::BufferAndFlush)
+            .format(log_format)
+            .duplicate_to_stderr(flexi_logger::Duplicate::All)
+            .start()
+        {
             return handle;
         }
     }
-    
-    // 如果所有日志配置都失败，至少在控制台打印错误信息
-    eprintln!("[ERROR] Failed to initialize logger with all configurations. Continuing without file logging.");
-    // 使用基本的控制台日志作为最后的备选
-    Logger::try_with_env_or_str("info")
+
+    eprintln!("[WARN] No writable log directory; using console output only.");
+    Logger::try_with_env_or_str(log_level)
         .unwrap()
         .log_to_stdout()
         .format(log_format)
         .start()
-        .expect("Failed to initialize basic console logging")
+        .expect("Failed to initialize console logging")
 }
 
 #[cfg(windows)]
@@ -291,6 +269,11 @@ fn spawn_signal_handler() {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    if env::args().nth(1).as_deref() == Some("--gui") {
+        let config = env::args().nth(2).map(PathBuf::from);
+        return gui::run(config).await;
+    }
+
     // 先解析命令行参数获取配置文件路径
     let conf_file = parse_arg();
     // 提前克隆conf_file以避免借用问题

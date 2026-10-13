@@ -45,6 +45,8 @@ mv target/release/corplink-rs /usr/bin/
 ```bash
 # direct
 corplink-rs config.json
+# GUI 管理界面（仅本机访问）
+corplink-rs --gui
 # systemd
 # config is /etc/corplink/config.json
 systemctl start corplink-rs.service
@@ -56,6 +58,12 @@ systemctl enable corplink-rs.service
 # NOTE: cookies.json is reserved by cookie storage
 systemctl start corplink-rs@test.service
 ```
+
+### GUI 管理界面
+
+运行 `corplink-rs --gui` 后，终端会显示一个 `http://127.0.0.1:端口` 地址，在本机浏览器中打开即可。管理页可以编辑和保存账号配置、启动或断开客户端，并查看运行日志。默认配置使用当前目录下的 `config.json`（文件不存在时保存在用户配置目录）；新增配置保存在用户配置目录的 `profiles` 文件夹中。
+
+建立 VPN 网卡需要管理员权限。macOS 可构建原生菜单栏应用，详见 [macos-menubar/README.md](macos-menubar/README.md)；它会使用系统授权弹窗启动控制服务。浏览器管理模式和 Linux/Windows 请从管理员终端运行，例如 macOS/Linux 使用 `sudo corplink-rs --gui`，Windows 使用“以管理员身份运行”的终端。GUI 服务只绑定 `127.0.0.1`，关闭启动它的终端后管理页也会退出。
 
 ## windows 特殊说明
 
@@ -194,6 +202,9 @@ graph TD;
 
 # Changelog
 
+- 0.5.4
+  - fix truncated terminal QR codes by checking both terminal width and height
+  - fall back to PNG and expose the one-time authentication link for QR login
 - 0.5.1
   - support using dns from server for macos(@fanwenlin)
   - fix high cpu usage

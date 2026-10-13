@@ -1,0 +1,488 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CorpLink</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --canvas: #f5f6f8;
+      --surface: #ffffff;
+      --inset: #f7f8fa;
+      --line: #e4e6eb;
+      --text: #202127;
+      --muted: #69707d;
+      --subtle: #8a909b;
+      --accent: #146ad8;
+      --accent-hover: #075dc8;
+      --accent-soft: #e9f2ff;
+      --success: #248450;
+      --warning: #a16610;
+      --danger: #c53c39;
+      --shadow: 0 1px 2px rgba(22, 30, 44, .04), 0 8px 24px rgba(22, 30, 44, .035);
+    }
+    * { box-sizing: border-box; }
+    html { min-height: 100%; }
+    body {
+      min-height: 100vh;
+      margin: 0;
+      background: var(--canvas);
+      color: var(--text);
+      font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+    button, input, select, textarea { font: inherit; }
+    button { cursor: pointer; }
+    button:disabled { cursor: default; }
+    .app {
+      width: min(1200px, 100%);
+      height: 100vh;
+      min-height: 100vh;
+      margin: 0 auto;
+      padding: clamp(18px, 3vw, 34px);
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+    .app-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 1px 2px 4px; }
+    .brand { display: flex; align-items: center; gap: 12px; }
+    .brand-mark {
+      width: 42px; height: 42px; display: grid; place-items: center;
+      border-radius: 12px; background: var(--accent); color: white;
+      box-shadow: 0 4px 12px rgba(20, 106, 216, .17);
+      font-size: 19px; font-weight: 730; letter-spacing: -.04em;
+    }
+    .brand-name { font-size: 19px; line-height: 1.2; font-weight: 700; letter-spacing: -.025em; }
+    .brand-subtitle { margin-top: 2px; color: var(--muted); font-size: 12px; }
+    .local-badge {
+      display: inline-flex; align-items: center; gap: 7px;
+      border: 1px solid var(--line); border-radius: 999px;
+      padding: 6px 10px; color: var(--muted); background: var(--surface);
+      font-size: 11px; white-space: nowrap;
+    }
+    .local-badge::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--success); }
+    .surface { background: var(--surface); border: 1px solid var(--line); border-radius: 16px; box-shadow: var(--shadow); }
+    .connection {
+      padding: 23px 25px 0;
+      display: grid;
+      grid-template-columns: minmax(230px, 1fr) minmax(300px, .92fr);
+      column-gap: clamp(24px, 5vw, 68px);
+      align-items: start;
+    }
+    .eyebrow {
+      margin: 0 0 16px; color: var(--muted); font-size: 11px;
+      font-weight: 650; letter-spacing: .08em;
+    }
+    .status-heading { display: flex; align-items: flex-start; gap: 15px; }
+    .status-indicator {
+      width: 47px; height: 47px; flex: 0 0 auto;
+      display: grid; place-items: center;
+      border-radius: 15px; background: #f0f1f3;
+    }
+    .status-indicator::after { content: ""; width: 13px; height: 13px; border-radius: 50%; background: #90949e; }
+    .status-indicator.on { background: #e7f5ec; }
+    .status-indicator.on::after { background: var(--success); box-shadow: 0 0 0 4px rgba(36, 132, 80, .12); }
+    .status-heading h1 { margin: -1px 0 4px; font-size: clamp(24px, 2.4vw, 29px); line-height: 1.18; letter-spacing: -.035em; font-weight: 710; }
+    .status-heading p { margin: 0; max-width: 34em; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+    .control-label { display: block; margin: 1px 0 7px; color: var(--muted); font-size: 12px; font-weight: 620; }
+    .profile-row { display: flex; gap: 8px; }
+    select, input, textarea {
+      color: var(--text); background: var(--surface); border: 1px solid var(--line);
+      border-radius: 9px; outline: none;
+    }
+    select, input { min-width: 0; min-height: 39px; padding: 8px 11px; }
+    select { flex: 1; }
+    button {
+      min-height: 39px; padding: 8px 13px; border: 1px solid var(--line);
+      border-radius: 9px; color: var(--text); background: var(--inset);
+      font-weight: 570; transition: background-color .14s ease, transform .12s ease, border-color .14s ease;
+    }
+    button:hover:not(:disabled) { background: #eceef2; }
+    button:active:not(:disabled) { transform: scale(.98); }
+    button:disabled { opacity: .48; }
+    button.primary { color: white; background: var(--accent); border-color: var(--accent); font-weight: 650; }
+    button.primary:hover:not(:disabled) { background: var(--accent-hover); }
+    button.quiet { background: transparent; color: var(--accent); border-color: transparent; }
+    button.quiet:hover:not(:disabled) { background: var(--accent-soft); }
+    button.icon-button { width: 39px; flex: 0 0 39px; padding: 0; font-size: 20px; font-weight: 400; line-height: 1; }
+    .action-row { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 11px; }
+    .action-row .primary { min-width: 86px; }
+    .inline-feedback { min-height: 17px; margin: 8px 0 0; color: var(--muted); font-size: 12px; }
+    .inline-feedback.error { color: var(--danger); }
+    .auth {
+      grid-column: 1 / -1; border-top: 1px solid var(--line); margin-top: 18px;
+    }
+    .auth summary {
+      list-style: none; display: flex; align-items: baseline; gap: 12px;
+      padding: 13px 0; cursor: pointer; font-size: 12px; font-weight: 630;
+    }
+    .auth summary::-webkit-details-marker, .editor summary::-webkit-details-marker { display: none; }
+    .auth summary::before { content: "›"; color: var(--subtle); font-size: 17px; line-height: .5; transition: transform .14s ease; }
+    .auth[open] summary::before { transform: rotate(90deg); }
+    .auth summary small { color: var(--muted); font-size: 11px; font-weight: 400; }
+    .auth-fields { display: flex; gap: 8px; padding: 0 0 16px 16px; max-width: 460px; }
+    .auth-fields input { flex: 1; }
+    .editor { overflow: hidden; flex: 0 0 auto; }
+    .editor summary {
+      list-style: none; display: flex; align-items: center; justify-content: space-between;
+      gap: 14px; min-height: 59px; padding: 13px 22px; cursor: pointer;
+    }
+    .editor summary:hover { background: var(--inset); }
+    .section-title { display: block; font-size: 14px; font-weight: 670; line-height: 1.2; }
+    .section-subtitle { display: block; margin-top: 3px; color: var(--muted); font-size: 11px; font-weight: 400; }
+    .editor-meta { margin-left: auto; color: var(--muted); font-size: 11px; white-space: nowrap; }
+    .editor-meta.unsaved { color: var(--warning); }
+    .chevron { color: var(--subtle); font-size: 18px; line-height: 1; transition: transform .16s ease; }
+    .editor[open] .chevron { transform: rotate(180deg); }
+    .editor-body { border-top: 1px solid var(--line); padding: 16px 20px 18px; }
+    .editor textarea {
+      display: block; width: 100%; min-height: 240px; height: min(38vh, 380px); resize: vertical;
+      padding: 13px 15px; background: var(--inset); color: var(--text);
+      font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; tab-size: 2;
+    }
+    .editor-footer { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin-top: 11px; }
+    .editor-footer p { margin: 0; color: var(--muted); font-size: 11px; }
+    .editor-actions { display: flex; gap: 8px; }
+    .activity {
+      display: flex; flex: 1 1 350px; flex-direction: column; min-height: 310px;
+      padding: 17px 20px 20px;
+    }
+    .activity-header { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 12px; }
+    .activity-header h2 { margin: 0; font-size: 14px; font-weight: 670; }
+    .activity-actions { display: flex; align-items: center; gap: 10px; }
+    .activity-actions button { min-height: 31px; padding: 5px 10px; font-size: 11px; }
+    .hint { color: var(--muted); font-size: 11px; }
+    .logbox {
+      min-height: 230px; flex: 1; overflow: auto; overscroll-behavior: contain;
+      padding: 12px 15px; background: var(--inset); border: 1px solid var(--line);
+      border-radius: 10px; user-select: text;
+      font: 12px/1.7 ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    .logbox.empty { display: grid; place-items: center; color: var(--muted); text-align: center; }
+    .logbox.empty::before { content: "暂无运行日志\a连接后可在这里查看状态和诊断信息"; white-space: pre; font: 12px/1.7 -apple-system, BlinkMacSystemFont, sans-serif; }
+    .log-line { white-space: pre-wrap; overflow-wrap: anywhere; }
+    .log-line.warn { color: var(--warning); }
+    .log-line.error { color: var(--danger); }
+    .log-line.gui { color: var(--accent); }
+    .footer { color: var(--subtle); font-size: 11px; text-align: center; padding: 0 0 1px; }
+    :is(button, select, input, textarea, summary):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    @media (max-width: 760px) {
+      .app { padding: 17px; gap: 13px; }
+      .connection { grid-template-columns: 1fr; gap: 22px; padding: 20px 20px 0; }
+      .auth { margin-top: 0; }
+      .activity { min-height: 300px; }
+      .editor-meta { display: none; }
+    }
+    @media (max-width: 480px) {
+      .local-badge { display: none; }
+      .action-row .quiet { padding-inline: 8px; }
+      .auth summary small { display: none; }
+      .activity-actions { gap: 5px; }
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --canvas: #1d1e21; --surface: #292a2e; --inset: #222327; --line: #3b3d43;
+        --text: #f2f3f5; --muted: #aaadb5; --subtle: #888c96;
+        --accent: #5a9eff; --accent-hover: #367fe8; --accent-soft: #283e5a;
+        --success: #4ac77f; --warning: #e2ad59; --danger: #ff7673;
+        --shadow: 0 1px 2px rgba(0, 0, 0, .12), 0 8px 24px rgba(0, 0, 0, .1);
+      }
+      .brand-mark { color: #132b4a; }
+      button.primary { color: #102441; }
+      .status-indicator { background: #383a40; }
+      .status-indicator.on { background: #254232; }
+      button:hover:not(:disabled) { background: #393b42; }
+      button.quiet:hover:not(:disabled) { background: var(--accent-soft); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      button, .chevron, .auth summary::before { transition: none; }
+      button:active:not(:disabled) { transform: none; }
+    }
+    @media (prefers-contrast: more) {
+      :root { --line: #787e89; --muted: #505762; }
+      .surface, select, input, textarea, button { border-width: 2px; }
+    }
+    @media (prefers-contrast: more) and (prefers-color-scheme: dark) {
+      :root { --muted: #c0c3ca; }
+    }
+    @media (prefers-reduced-transparency: reduce) {
+      .surface, .local-badge { backdrop-filter: none; }
+    }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <header class="app-header">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">C</span>
+        <div><div class="brand-name">CorpLink</div><div class="brand-subtitle">企业网络连接</div></div>
+      </div>
+      <span class="local-badge">仅此 Mac 可访问</span>
+    </header>
+
+    <section class="connection surface" aria-label="连接状态与操作">
+      <div class="connection-summary">
+        <p class="eyebrow">连接状态</p>
+        <div class="status-heading">
+          <span class="status-indicator" id="dot" aria-hidden="true"></span>
+          <div><h1 id="stateText">正在读取状态</h1><p id="sub">请稍候…</p></div>
+        </div>
+      </div>
+      <div class="connection-controls">
+        <label class="control-label" for="profile">当前配置</label>
+        <div class="profile-row">
+          <select id="profile" aria-label="当前配置"></select>
+          <button class="icon-button" id="newProfile" type="button" title="新建配置" aria-label="新建配置">＋</button>
+        </div>
+        <div class="action-row">
+          <button class="primary" id="start" type="button">连接</button>
+          <button id="stop" type="button" disabled>断开</button>
+          <button class="quiet" id="editConfig" type="button">编辑配置</button>
+        </div>
+        <p class="inline-feedback" id="toast" role="status" aria-live="polite"></p>
+      </div>
+      <details class="auth" id="authPanel">
+        <summary><span>登录验证码</span><small>仅在客户端提示时输入</small></summary>
+        <div class="auth-fields">
+          <input id="authInput" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="邮件验证码或双重验证码" aria-label="登录验证码">
+          <button id="sendInput" type="button">发送</button>
+        </div>
+      </details>
+    </section>
+
+    <details class="editor surface" id="editor">
+      <summary>
+        <span><span class="section-title">配置详情</span><span class="section-subtitle">查看或编辑完整的 JSON 配置</span></span>
+        <span class="editor-meta" id="editorMeta">默认配置</span>
+        <span class="chevron" aria-hidden="true">⌄</span>
+      </summary>
+      <div class="editor-body">
+        <textarea id="config" spellcheck="false" aria-label="配置文件 JSON"></textarea>
+        <div class="editor-footer">
+          <p>配置仅保存在本机文件中。修改后请保存，再连接。</p>
+          <div class="editor-actions">
+            <button id="discard" type="button">放弃修改</button>
+            <button class="primary" id="save" type="button">保存配置</button>
+          </div>
+        </div>
+      </div>
+    </details>
+
+    <section class="activity surface" aria-labelledby="activityTitle">
+      <div class="activity-header">
+        <h2 id="activityTitle">运行日志</h2>
+        <div class="activity-actions">
+          <span class="hint" id="logCount">0 条</span>
+          <span class="hint" id="copyStatus" role="status"></span>
+          <button id="copyLogs" type="button" disabled>复制日志</button>
+        </div>
+      </div>
+      <div class="logbox empty" id="logs" role="log" aria-live="polite" aria-label="运行日志"></div>
+    </section>
+
+    <footer class="footer">CorpLink 管理服务仅在本机运行</footer>
+  </main>
+
+  <script>
+    const token = window.CORPLINK_TOKEN;
+    const headers = {'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token};
+    const $ = id => document.getElementById(id);
+    let selected = 'default';
+    let dirty = false;
+    let currentLogs = [];
+    let defaultConfigName = '';
+
+    async function api(path, options = {}) {
+      const response = await fetch(path, {...options, headers: {...headers, ...options.headers}});
+      let data;
+      try { data = await response.json(); } catch { data = {error: '服务返回无效数据'}; }
+      if (!response.ok) throw Error(data.error || '请求失败 ' + response.status);
+      return data;
+    }
+
+    function toast(message, error = false) {
+      $('toast').textContent = message;
+      $('toast').classList.toggle('error', error);
+    }
+
+    function updateEditorMeta(message) {
+      const defaultLabel = '默认配置' + (defaultConfigName ? ' · ' + defaultConfigName : '');
+      $('editorMeta').textContent = message || (selected === 'default' ? defaultLabel : selected);
+      $('editorMeta').classList.toggle('unsaved', dirty);
+    }
+
+    async function loadConfig(name) {
+      selected = name;
+      $('profile').value = name;
+      try {
+        const data = await api('/api/config?name=' + encodeURIComponent(name));
+        const parsed = JSON.parse(data.content);
+        $('config').value = JSON.stringify(parsed, null, 2);
+        dirty = false;
+        updateEditorMeta();
+        if (!parsed.company_name || !parsed.username) $('editor').open = true;
+      } catch {
+        $('config').value = JSON.stringify({company_name: '', username: '', platform: 'ldap'}, null, 2);
+        dirty = true;
+        $('editor').open = true;
+        updateEditorMeta('待保存');
+        toast('请填写企业名称和用户名，然后保存配置。', true);
+      }
+    }
+
+    function syncProfiles(names, defaultName) {
+      defaultConfigName = defaultName || '';
+      const select = $('profile');
+      const previous = Array.from(select.options, option => option.value);
+      if (previous.length !== names.length || previous.some((name, index) => name !== names[index])) {
+        select.replaceChildren();
+        for (const name of names) {
+          const option = document.createElement('option');
+          option.value = name;
+          option.textContent = name === 'default' ? '默认配置' : name;
+          select.append(option);
+        }
+      }
+      for (const option of select.options) {
+        const label = '默认配置' + (defaultConfigName ? ' · ' + defaultConfigName : '');
+        if (option.value === 'default' && option.textContent !== label) option.textContent = label;
+      }
+      select.value = selected;
+    }
+
+    function appendLogLine(line) {
+      const row = document.createElement('div');
+      row.className = 'log-line';
+      if (line.includes('[ERROR]')) row.classList.add('error');
+      else if (line.includes('[WARN]')) row.classList.add('warn');
+      else if (line.startsWith('[GUI]')) row.classList.add('gui');
+      row.textContent = line;
+      $('logs').append(row);
+    }
+
+    function renderLogs(lines) {
+      const next = Array.isArray(lines) ? lines : [];
+      if (next.length === currentLogs.length && next.every((line, index) => line === currentLogs[index])) return;
+      const box = $('logs');
+      const follow = box.scrollHeight - box.scrollTop - box.clientHeight < 48;
+      const incremental = next.length >= currentLogs.length && currentLogs.every((line, index) => line === next[index]);
+      if (!incremental) box.replaceChildren();
+      for (const line of (incremental ? next.slice(currentLogs.length) : next)) appendLogLine(line);
+      currentLogs = next.slice();
+      box.classList.toggle('empty', next.length === 0);
+      $('logCount').textContent = next.length + ' 条';
+      $('copyLogs').disabled = next.length === 0;
+      $('copyStatus').textContent = '';
+      if (follow || next.length === 0) box.scrollTop = box.scrollHeight;
+    }
+
+    async function copyLogs() {
+      const content = currentLogs.join('\n');
+      if (!content) return;
+      let copied = false;
+      const field = document.createElement('textarea');
+      field.value = content;
+      field.readOnly = true;
+      field.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0';
+      document.body.append(field);
+      try { field.focus(); field.select(); copied = document.execCommand('copy'); } catch {}
+      finally { field.remove(); }
+      if (!copied && navigator.clipboard?.writeText) {
+        try { await navigator.clipboard.writeText(content); copied = true; } catch {}
+      }
+      $('copyLogs').focus();
+      $('copyStatus').textContent = copied ? '已复制' : '复制失败，请选中日志后按 ⌘C';
+    }
+
+    async function refresh() {
+      try {
+        const data = await api('/api/state');
+        syncProfiles(data.profiles, data.default_config_name);
+        if (!dirty && $('editorMeta').textContent === '默认配置') updateEditorMeta();
+        $('dot').classList.toggle('on', data.connected);
+        $('stateText').textContent = data.connected ? '客户端运行中' : '未连接';
+        $('sub').textContent = data.connected
+          ? '正在使用 ' + (data.profile === 'default' ? '默认配置' : data.profile || '当前配置')
+          : data.last_exit || '选择配置后连接企业网络';
+        $('start').disabled = data.connected;
+        $('stop').disabled = !data.connected;
+        renderLogs(data.logs);
+      } catch (error) {
+        $('stateText').textContent = '服务不可用';
+        $('sub').textContent = '无法读取本机管理服务';
+        toast(error.message, true);
+      }
+    }
+
+    $('profile').addEventListener('change', event => {
+      if (dirty) {
+        event.target.value = selected;
+        $('editor').open = true;
+        toast('请先保存或放弃当前修改。', true);
+        return;
+      }
+      toast('');
+      loadConfig(event.target.value);
+    });
+    $('config').addEventListener('input', () => { dirty = true; updateEditorMeta('未保存'); });
+    $('editConfig').addEventListener('click', () => { $('editor').open = true; $('config').focus(); });
+    $('discard').addEventListener('click', () => { loadConfig(selected); toast('已放弃未保存的修改。'); });
+    $('newProfile').addEventListener('click', async () => {
+      if (dirty) { $('editor').open = true; toast('请先保存或放弃当前修改。', true); return; }
+      const name = prompt('新配置名称（英文、数字、-、_）');
+      if (!name) return;
+      if (!/^[A-Za-z0-9_-]{1,48}$/.test(name) || name === 'default') { toast('名称格式不正确。', true); return; }
+      if (Array.from($('profile').options).some(option => option.value === name)) { await loadConfig(name); return; }
+      try {
+        await api('/api/config', {method: 'POST', body: JSON.stringify({name, content: JSON.stringify({company_name: '', username: '', platform: 'ldap'}, null, 2)})});
+        selected = name;
+        await refresh();
+        await loadConfig(name);
+        toast('新配置已创建，请填写信息并保存。');
+      } catch (error) { toast(error.message, true); }
+    });
+    $('save').addEventListener('click', async () => {
+      try {
+        JSON.parse($('config').value);
+        await api('/api/config', {method: 'POST', body: JSON.stringify({name: selected, content: $('config').value})});
+        dirty = false;
+        updateEditorMeta('已保存');
+        toast('配置已保存。');
+      } catch (error) { toast(error.message, true); }
+    });
+    $('start').addEventListener('click', async () => {
+      if (dirty) { $('editor').open = true; toast('请先保存当前配置。', true); return; }
+      try {
+        await api('/api/start', {method: 'POST', body: JSON.stringify({name: selected})});
+        toast('客户端正在启动…');
+        await refresh();
+      } catch (error) { toast(error.message, true); }
+    });
+    $('stop').addEventListener('click', async () => {
+      try {
+        await api('/api/stop', {method: 'POST', body: '{}'});
+        toast('客户端已停止。');
+        await refresh();
+      } catch (error) { toast(error.message, true); }
+    });
+    $('sendInput').addEventListener('click', async () => {
+      const input = $('authInput');
+      const value = input.value.trim();
+      if (!value) { toast('请先输入验证码。', true); return; }
+      try {
+        await api('/api/input', {method: 'POST', body: JSON.stringify({value})});
+        input.value = '';
+        toast('验证码已发送。');
+        input.focus();
+      } catch (error) { toast(error.message, true); }
+    });
+    $('authInput').addEventListener('keydown', event => {
+      if (event.key === 'Enter') $('sendInput').click();
+    });
+    $('copyLogs').addEventListener('click', copyLogs);
+    loadConfig(selected).then(refresh);
+    setInterval(refresh, 1800);
+  </script>
+</body>
+</html>

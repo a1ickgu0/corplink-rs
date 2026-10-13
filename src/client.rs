@@ -386,44 +386,40 @@ impl Client {
     ) -> Result<String, Error> {
         let code = TerminalQrCode::from_bytes(url.as_bytes());
         // 显示策略（qr_display，缺省 auto）：
-        //   auto     —— 终端宽度放得下就在终端渲染；放不下（换行会破坏二维码图形）自动改用图片弹窗
+        //   auto     —— 终端宽高都放得下才在终端渲染，否则自动改用图片弹窗
         //   terminal —— 强制终端渲染，放不下时提示放大窗口/缩小字体
         //   png      —— 强制图片弹窗，失败回退终端渲染
         //   both     —— 两者都显示
         // 链接是给 CorpLink/Lark 客户端扫码用的 OTP URL，浏览器打开没有内容属正常。
         let qr_mode = self.conf.qr_display.as_deref().unwrap_or("auto");
         let qr_target_size = self.conf.qr_image_size.unwrap_or(640);
-        let (cols, rows) = utils::terminal_size().unwrap_or((0, 0));
-        // 横向换行会直接破坏二维码（不可恢复）；纵向超高可滚动回看（可恢复），只作提示。
-        // 非 tty（管道/重定向）时无从判断宽度，按放得下处理以保持旧行为。
-        let fits_cols = cols == 0 || cols >= code.columns_needed();
-        let (show_terminal, show_png) = match qr_mode {
-            "terminal" => (true, false),
-            "png" => (false, true),
-            "both" => (true, true),
-            _ => (fits_cols, !fits_cols), // auto
-        };
+        let terminal_size = utils::terminal_size();
+        let (cols, rows) = terminal_size.unwrap_or((0, 0));
+        let display_plan = code.display_plan(qr_mode, terminal_size);
 
-        if show_terminal {
-            // 先清屏再输出链接和二维码，两者都从终端顶部开始、完整可见
+        if display_plan.show_terminal {
             print!("\x1b[2J\x1b[H");
             let _ = io::stdout().flush();
         }
-        log::info!("old token is: {token}");
-        log::info!("please scan the QR code or visit the following link to auth corplink:\n{url}");
-        if show_terminal {
-            if !fits_cols {
+
+        // 二维码内容本身就是认证 URL。直接写到 stdout，避免进入持久日志；终端二维码采用
+        // 顺序输出后不会再用光标回退覆盖这段文本，用户可在滚动区复制链接。
+        println!("认证链接（含一次性凭据，请勿转发）：\n{url}\n");
+        let _ = io::stdout().flush();
+
+        if display_plan.show_terminal {
+            if !display_plan.fits_terminal {
                 log::warn!(
-                    "当前终端 {} 列，放不下 {} 列的二维码（换行会导致无法扫描）。请放大终端窗口或缩小字体（macOS: Cmd+“-”）后重新登录，或改用图片弹窗",
+                    "当前终端为 {}×{}，完整显示二维码至少需要 {}×{}。请放大终端窗口、缩小字体，或设置 qr_display=png",
                     cols,
-                    code.columns_needed()
+                    rows,
+                    code.columns_needed(),
+                    code.rows_needed() + 3,
                 );
-            } else if rows > 0 && rows < code.rows_needed() + 3 {
-                log::info!("二维码较高，若屏幕未能显示完整，向上滚动即可看到全图（不要改变终端宽度）");
             }
             code.print();
         }
-        if show_png {
+        if display_plan.show_png {
             match code.open_as_png(qr_target_size) {
                 Ok(()) => log::info!(
                     "二维码已用系统图片查看器弹出（约 {0}×{0} 像素）；若未自动打开，可手动查看 {1}",
@@ -432,9 +428,10 @@ impl Client {
                 ),
                 Err(e) => {
                     log::warn!("二维码图片弹窗失败({e})，回退终端渲染");
-                    if !show_terminal {
+                    if !display_plan.show_terminal {
                         print!("\x1b[2J\x1b[H");
                         let _ = io::stdout().flush();
+                        println!("认证链接（含一次性凭据，请勿转发）：\n{url}\n");
                         code.print();
                     }
                 }
@@ -640,7 +637,6 @@ impl Client {
             let url = Url::parse(&otp_uri).unwrap();
             for (k, v) in url.query_pairs() {
                 if k == "secret" {
-                    log::info!("got 2fa token: {}", &v);
                     self.conf.code = Some(v.to_string());
                     let _ = self.conf.save().await;
                     break;
